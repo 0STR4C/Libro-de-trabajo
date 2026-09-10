@@ -1,0 +1,3 @@
+Docker Desktop con Docker Engine y CLI compatibles con Compose v2
+Imagen temporal de base de datos: postgres:16-alpine
+Imagen de pruebas: librodetrabajo-app:latest, construida desde ../../Dockerfile

@@ -1,0 +1,1 @@
+{"private":true,"description":"Prueba UI WFM aislada","devDependencies":{"playwright":"1.62.1"},"scripts":{"test":"node ui_smoke.cjs"}}

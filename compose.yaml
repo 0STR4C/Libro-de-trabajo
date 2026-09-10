@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-operativa}
+      POSTGRES_USER: ${POSTGRES_USER:-operativa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operativa}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-operativa} -d ${POSTGRES_DB:-operativa}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://operativa:operativa@db:5432/operativa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operativa}
+      APP_SECRET: ${APP_SECRET:-desarrollo-no-usar-en-produccion}
+      SESSION_SECONDS: ${SESSION_SECONDS:-43200}
+      SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-1800}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
+      HTTPS_CONFIRMED: ${HTTPS_CONFIRMED:-false}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      backup:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-operativa}
+      POSTGRES_USER: ${POSTGRES_USER:-operativa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operativa}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-3600}
+    command: ["sh", "/opt/centro-operativo/backup.sh"]
+    volumes:
+      - ./tools/postgres_backup/backup.sh:/opt/centro-operativo/backup.sh:ro
+      - ./postgres-backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
+  migrate:
+    profiles: ["migration"]
+    build: .
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://operativa:operativa@db:5432/operativa}
+    command: ["python", "-m", "tools.sqlite_to_postgres.migrate", "/data/centro_operativo.db"]
+    volumes:
+      - ./centro_operativo.db:/data/centro_operativo.db:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

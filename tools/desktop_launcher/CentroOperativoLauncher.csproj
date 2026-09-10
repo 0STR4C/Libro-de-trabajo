@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CentroOperativo</AssemblyName>
+    <RootNamespace>CentroOperativoLauncher</RootNamespace>
+    <ApplicationIcon>../../app/static/libro-trabajo.ico</ApplicationIcon>
+    <Product>Libro de Trabajo</Product>
+    <Description>Libro de Trabajo · Centro Operativo</Description>
+  </PropertyGroup>
+</Project>

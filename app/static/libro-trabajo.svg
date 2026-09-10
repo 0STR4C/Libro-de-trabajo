@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Libro de Trabajo">
+ <rect width="256" height="256" rx="52" fill="#123047"/>
+ <path d="M38 55 Q84 42 120 66 L120 205 Q80 181 38 195Z" fill="#fff"/>
+ <path d="M136 66 Q172 42 218 55 L218 195 Q176 181 136 205Z" fill="#38d4bd"/>
+ <path d="M58 86 Q81 80 101 91 M58 113 Q81 107 101 118 M58 140 Q81 134 101 145" fill="none" stroke="#123047" stroke-width="8" stroke-linecap="round"/>
+ <path d="m157 123 16 16 28-34" fill="none" stroke="#123047" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

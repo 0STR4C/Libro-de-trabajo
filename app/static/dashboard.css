@@ -1,0 +1,33 @@
+.transfer-group>.panel{overflow:visible}.more-menu-pop{top:auto!important;bottom:36px}.status-dropdown{position:relative;display:inline-block}.status-dropdown summary{list-style:none}.status-dropdown summary::-webkit-details-marker{display:none}.status-chip{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:16px;padding:6px 11px;font-family:Inter,Segoe UI,sans-serif;font-size:11px;font-weight:700;white-space:nowrap;cursor:pointer}.status-chip:after{content:'⌄';margin-left:6px;font-size:10px}.status-chip.SIN_ASIGNAR,.status-chip.PENDIENTE{background:#fff0d6;color:#946200}.status-chip.ASIGNADO,.status-chip.EN_GESTION{background:#e8f3ff;color:#1769aa}.status-chip.FINALIZADO,.status-chip.RESUELTO{background:#e3f7ee;color:#16785d}.status-chip.ESPERANDO_RESPUESTA{background:#f3edff;color:#6b46a1}.status-chip.CANCELADO{background:#fdecec;color:#b83232}.status-options{position:absolute;right:0;bottom:34px;z-index:50;background:#fff;border:1px solid #d9e2ec;border-radius:9px;box-shadow:0 10px 30px #102a4330;padding:5px;min-width:170px}.status-option{display:block;width:100%;border:0;border-radius:6px;padding:9px 11px;text-align:left;font-family:Inter,Segoe UI,sans-serif;font-size:12px;font-weight:600;background:#fff;cursor:pointer}.status-option:hover{filter:brightness(.96)}.status-option.SIN_ASIGNAR,.status-option.PENDIENTE{color:#946200;background:#fff8e8}.status-option.ASIGNADO,.status-option.EN_GESTION{color:#1769aa;background:#f1f7fd}.status-option.FINALIZADO,.status-option.RESUELTO{color:#16785d;background:#edf9f4}.status-option.ESPERANDO_RESPUESTA{color:#6b46a1;background:#f7f3ff}.status-option.CANCELADO{color:#b83232;background:#fff2f2}.comment-button{font-size:16px;padding:4px 9px}.analytics-grid{display:grid;grid-template-columns:minmax(430px,1.35fr) minmax(300px,.8fr);gap:20px;margin-top:20px}.analytics-grid .panel{margin-top:0}.analytics-side{display:grid;gap:16px}.map-panel{padding-bottom:16px}.analytics-head{padding:18px 20px 10px}.analytics-head h2{font-size:17px;margin:0 0 4px}.analytics-head p{margin:0;color:#627d98;font-size:12px}.uruguay-map-wrap{display:grid;grid-template-columns:minmax(260px,1fr) auto;align-items:center;padding:0 18px}.uruguay-map{width:100%;max-height:500px}.map-department{stroke:#fff;stroke-width:1.2;vector-effect:non-scaling-stroke;transition:.15s}.map-department:hover{filter:brightness(.92);stroke:#1769aa;stroke-width:2}.map-department.has-active{stroke:#d64545;stroke-width:2.2}.map-legend{display:grid;grid-template-columns:auto;gap:4px;justify-items:start;color:#627d98;font-size:11px}.map-legend i{width:24px;height:8px;border-radius:3px}.map-legend b{width:24px;height:8px;border:2px solid #d64545;border-radius:3px;background:#fff;margin-top:8px}.metric-panel{padding-bottom:14px}.metric-bars{display:grid;gap:12px;padding:4px 20px 16px}.metric-bar-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:#486581}.metric-bar-label strong{color:#243b53}.metric-track{height:7px;background:#edf2f7;border-radius:6px;overflow:hidden;margin-top:5px}.metric-track i{display:block;height:100%;background:#6eafd9;border-radius:6px}@media(max-width:1050px){.analytics-grid{grid-template-columns:1fr}.analytics-side{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.analytics-side{grid-template-columns:1fr}.uruguay-map-wrap{grid-template-columns:1fr}.map-legend{grid-template-columns:repeat(6,auto);align-items:center;justify-content:center}.map-legend span{grid-column:1/-1}.status-options{right:auto;left:0}.transfer-group>.panel{overflow:auto}.more-menu-pop{position:fixed;right:18px;bottom:80px}}
+.map-canvas{position:relative;min-width:0}
+.country-shape{filter:drop-shadow(1.5px 0 #243b53) drop-shadow(-1.5px 0 #243b53) drop-shadow(0 1.5px #243b53) drop-shadow(0 -1.5px #243b53)}
+.map-department,.map-department.has-active{stroke:#fff;stroke-width:1.25;cursor:default}
+.map-department:hover,.map-department.has-active:hover{stroke:#1769aa;stroke-width:2;filter:brightness(.96)}
+.map-tooltip{position:absolute;z-index:8;pointer-events:none;min-width:180px;max-width:260px;padding:11px 13px;border:1px solid #d9e2ec;border-radius:9px;background:#fff;color:#334e68;box-shadow:0 10px 28px #102a4330;font-family:Inter,Segoe UI,sans-serif;display:grid;gap:3px;font-size:12px}
+.map-tooltip[hidden]{display:none}
+.map-tooltip strong{font-size:13px;color:#102a43}
+.map-tooltip span{color:#1769aa;font-weight:700}
+.map-tooltip small{color:#627d98;line-height:1.35}
+.standards-layout{display:grid;grid-template-columns:minmax(430px,1.2fr) minmax(330px,.8fr);gap:20px}
+.standards-layout>.panel{margin-top:0}
+.standards-map-panel{overflow:visible;padding-bottom:18px}
+.standards-map-canvas{max-width:520px;margin:auto;padding:0 30px}
+.standards-map{width:100%;max-height:610px}
+.standard-department{fill:#f1f5f8;cursor:pointer}
+.standard-department.has-reference{fill:#badcf1}
+.standard-department.selected{fill:#438fbe;stroke:#0b4f86;stroke-width:2.4}
+.standards-map-hint{text-align:center;color:#627d98;font-size:12px;margin-top:-4px}
+.arrival-details{overflow:hidden}
+.arrival-detail-head{padding:22px;border-bottom:1px solid #e3ebf3;background:linear-gradient(135deg,#f2f8fc,#fff)}
+.arrival-detail-head span{text-transform:uppercase;letter-spacing:.06em;color:#1769aa;font-size:11px;font-weight:800}
+.arrival-detail-head h2{margin:7px 0 3px;font-size:24px}
+.arrival-detail-head p{margin:0;color:#627d98;font-size:13px}
+.arrival-service-list{display:grid;gap:14px;padding:18px}
+.arrival-service{border:1px solid #e3ebf3;border-radius:10px;overflow:hidden}
+.arrival-service h3{margin:0;padding:11px 14px;background:#f7fafc;color:#334e68;font-size:13px}
+.arrival-zone{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:13px 14px;border-top:1px solid #edf2f7}
+.arrival-zone div{display:grid;gap:3px}
+.arrival-zone strong{font-size:12px;line-height:1.35}
+.arrival-zone small{color:#829ab1}
+.arrival-zone>span{flex:0 0 auto;padding:6px 9px;border-radius:14px;background:#e9f4fb;color:#1769aa;font-size:11px;font-weight:800}
+@media(max-width:1050px){.standards-layout{grid-template-columns:1fr}}
