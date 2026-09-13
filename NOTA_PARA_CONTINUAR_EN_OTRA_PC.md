@@ -37,7 +37,7 @@ El servicio Docker `backup` genera cada 15 minutos un respaldo PostgreSQL verifi
 
 La seguridad común vive en `app/security.py`; valida secretos, contraseñas, CSRF, sesiones y límites de ingreso. Producción exige `PUBLIC_BASE_URL` con HTTPS porque las cookies llevan `Secure`; el backend debe quedar detrás de un proxy TLS. `SECURITY.md` y `DEPLOY_LOCAL_NETWORK.md` contienen el contrato vigente. Los servidores ya no se importan entre sí: las reglas compartidas están en módulos de dominio descritos en `ARCHITECTURE.md`.
 
-El entorno activo de partida se comprobó con la versión 1.29.0; `app`, `db` y `backup` quedaron saludables. La revisión 1.30.0 aprobó 200 pruebas generales y 28 integraciones PostgreSQL sin desplegarse sobre la base operativa. El último dump se restauró en un contenedor temporal: 28 tablas, 554 filas, 0 restricciones inválidas, 0 referencias WFM huérfanas y 0 problemas de secuencias. No usar `docker compose down -v`, no restaurar sobre `librodetrabajo_postgres_data` y no tocar `centro_operativo.db`.
+El entorno activo usa la imagen `librodetrabajo-app:1.30.0`; `app`, `db` y `backup` quedaron saludables. La revisión aprobó 200 pruebas generales y 28 integraciones PostgreSQL antes del despliegue. El último dump se restauró en un contenedor temporal: 28 tablas, 554 filas, 0 restricciones inválidas, 0 referencias WFM huérfanas y 0 problemas de secuencias. No usar `docker compose down -v`, no restaurar sobre `librodetrabajo_postgres_data` y no tocar `centro_operativo.db`.
 
 ## Decisiones operativas importantes
 
