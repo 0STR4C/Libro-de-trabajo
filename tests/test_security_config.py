@@ -15,6 +15,9 @@ class RuntimeSecurityConfigTests(unittest.TestCase):
             "APP_SECRET": "a9f3c8e7b6d54120A9f3c8e7b6d54120",
             "POSTGRES_PASSWORD": "db-a9f3c8e7b6d54120",
             "ADMIN_PASSWORD": "admin-a9f3C8e7",
+            "PUBLIC_BASE_URL": "https://centro.interno.example",
+            "ALLOWED_ORIGINS": "https://centro.interno.example",
+            "ALLOWED_HOSTS": "centro.interno.example",
         }
 
     def test_development_accepts_local_defaults(self):
@@ -49,6 +52,24 @@ class RuntimeSecurityConfigTests(unittest.TestCase):
     def test_production_accepts_non_default_values(self):
         result = validate_runtime_environment(self.valid_production())
         self.assertEqual(result.app_env, "production")
+        self.assertEqual(result.public_base_url, "https://centro.interno.example")
+
+    def test_production_requires_an_https_public_url(self):
+        for invalid_url in ("", "http://centro.interno.example", "https://", "https://usuario:clave@centro.interno.example"):
+            environment = self.valid_production()
+            environment["PUBLIC_BASE_URL"] = invalid_url
+            with self.subTest(public_base_url=invalid_url), self.assertRaises(RuntimeError):
+                validate_runtime_environment(environment)
+
+    def test_production_requires_public_url_in_allowed_hosts_and_origins(self):
+        environment = self.valid_production()
+        environment["ALLOWED_ORIGINS"] = "https://otro.interno.example"
+        with self.assertRaisesRegex(RuntimeError, "ALLOWED_ORIGINS"):
+            validate_runtime_environment(environment)
+        environment = self.valid_production()
+        environment["ALLOWED_HOSTS"] = "otro.interno.example"
+        with self.assertRaisesRegex(RuntimeError, "ALLOWED_HOSTS"):
+            validate_runtime_environment(environment)
 
     def test_unknown_environment_is_rejected(self):
         with self.assertRaises(RuntimeError):
@@ -105,11 +126,14 @@ class FastApiSecurityConfigTests(unittest.TestCase):
                 "APP_SECRET": "a9f3c8e7b6d54120A9f3c8e7b6d54120",
                 "POSTGRES_PASSWORD": "db-a9f3c8e7b6d54120",
                 "ADMIN_PASSWORD": "admin-a9f3C8e7",
+                "PUBLIC_BASE_URL": "https://centro.interno.example",
+                "ALLOWED_ORIGINS": "https://centro.interno.example",
+                "ALLOWED_HOSTS": "centro.interno.example",
                 "ENABLE_API_DOCS": "false",
             }
         )
         result = subprocess.run(
-            [sys.executable, "-B", "-c", "from app import postgres_server as s; assert s.app.openapi_url is None; print('ok')"],
+            [sys.executable, "-B", "-c", "from app import postgres_server as s; from fastapi.responses import Response; response=Response(); s.set_auth_cookies(response, 'token'); assert s.app.openapi_url is None; assert all('Secure' in value for value in response.headers.getlist('set-cookie')); print('ok')"],
             env=environment,
             capture_output=True,
             text=True,

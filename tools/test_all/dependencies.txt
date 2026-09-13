@@ -1,0 +1,7 @@
+Docker Engine 27 o compatible
+Docker Compose v2
+PowerShell 5.1 o superior
+Node.js 22 o compatible
+Imagen local librodetrabajo-app:latest
+PostgreSQL 16 Alpine disponible como imagen local
+Playwright 1.62.1 (opcional; fijado en tools/wfm_offline_build/package.json)

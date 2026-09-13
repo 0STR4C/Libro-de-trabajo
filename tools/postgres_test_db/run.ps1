@@ -1,3 +1,6 @@
+[CmdletBinding()]
+param([string]$ImageName = 'librodetrabajo-app:latest')
+
 $ErrorActionPreference = "Stop"
 
 $toolDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -7,6 +10,7 @@ $suiteDatabase = "suite_" + ([guid]::NewGuid().ToString("N"))
 $suiteUrl = "postgresql://test_runner:test_only_password@test-db:5432/$suiteDatabase"
 
 try {
+    $env:TEST_APP_IMAGE = $ImageName
     docker compose -p $projectName -f $composeFile up -d --wait test-db
     if ($LASTEXITCODE -ne 0) { throw "La base PostgreSQL temporal no inició correctamente." }
 
@@ -25,5 +29,6 @@ finally {
     }
     finally {
         docker compose -p $projectName -f $composeFile stop test-db
+        Remove-Item Env:TEST_APP_IMAGE -ErrorAction SilentlyContinue
     }
 }

@@ -2,7 +2,7 @@
 
 ## Instrucción para el próximo chat
 
-Estoy continuando el proyecto **Libro de trabajo / Centro Operativo** trasladado desde otra computadora. Antes de modificarlo, lee completos `README.md`, `CHANGELOG.md` y esta nota. Revisa el estado real de los archivos y la base `centro_operativo.db`; no reemplaces ni borres esa base porque contiene los registros operativos trasladados. Mantén compatibilidad con el inicio mediante `Abrir Centro Operativo.bat` y verifica los cambios en `http://127.0.0.1:8000/`.
+Estoy continuando el proyecto **Libro de trabajo / Centro Operativo** trasladado desde otra computadora. Antes de modificarlo, lee `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md`, `DATA_MANIFEST.md` y esta nota. Revisa el estado real de Git y Docker; no reemplaces ni borres `centro_operativo.db` porque contiene el origen histórico trasladado. Mantén compatibilidad con `Abrir Centro Operativo.bat` y con el despliegue Docker/PostgreSQL.
 
 ## Objetivo del sistema
 
@@ -20,14 +20,14 @@ Reemplazar la planilla de operación diaria por una aplicación web con usuarios
 
 ## Estado actual
 
-- Versión: **1.13.0**, registrada el 7 de septiembre de 2026.
+- Versión: **1.30.0**, registrada el 13 de septiembre de 2026.
 - Implementación activa y validada en esta computadora: `app/postgres_server.py` mediante Docker Compose.
 - Base activa: PostgreSQL en el volumen Docker `librodetrabajo_postgres_data`.
 - `centro_operativo.db` se conserva intacta como origen histórico protegido; no debe reemplazarse, borrarse ni usarse en paralelo para la operación diaria.
 - Interfaz: archivos en `app/static/`.
-- Pruebas: `tests/` contiene regresión funcional y seguridad; el intérprete de trabajo pasa 36 pruebas (28 ejecutadas y 8 omitidas por entorno). `tools/postgres_security_test/run.ps1` ejecuta 7 pruebas PostgreSQL sobre una base efímera aislada; todas pasaron.
+- Pruebas: `tools/test_all/run.ps1 -Coverage` descubrió 200 pruebas generales (172 ejecutadas y 28 omitidas porque requieren PostgreSQL), informó cobertura por módulo, validó JavaScript y la interfaz sintética, y luego aprobó las 28 integraciones PostgreSQL sobre una base nueva y aislada.
 - El modo local crea una copia diaria consistente en `backups/` antes de inicializar la aplicación, sin sobrescribir ni eliminar copias existentes.
-- Usuario inicial histórico: `admin`. La contraseña inicial figura en el README y debe cambiarse antes de producción.
+- Usuario inicial histórico: `admin`. La contraseña se define mediante `ADMIN_PASSWORD` y debe cambiarse antes de producción.
 - Dominio corporativo permitido: `@portoservicios.com.uy`.
 - OAuth de Google está preparado pero **no configurado**, porque el usuario no tiene permisos de administración de Google Workspace. La aplicación funciona normalmente con correo/usuario y contraseña local.
 
@@ -35,9 +35,9 @@ Docker ejecuta `app/postgres_server.py` con las mismas rutas y reglas funcionale
 
 El servicio Docker `backup` genera cada 15 minutos un respaldo PostgreSQL verificado en `postgres-backups/`, sin eliminar copias existentes. Administrador y Supervisor pueden descargar reportes CSV de Avisos, Demoras, Programados, Horarios y Cotizaciones; Avisos incluye filtros históricos detallados y Demoras filtros por período, estado, departamento, prestación y texto libre. Horarios conserva registros semana a semana, filtra por persona, rol y período, impide duplicados o superposiciones incluso después de medianoche y permite copiar la semana anterior sin reemplazar registros existentes. La grilla precarga persona y fecha al agregar desde una celda; también se configura desde el modal de **Configuración → General**. El cotizador separa coberturas Asegurado/No asegurado y las tarifas se editan en pestañas por cobertura; los campos de cerrajería desp. 22 hs con costo cero ya no se muestran. El Administrador también puede descargar el Registro de auditoría. Para un servidor definitivo todavía se debe configurar un destino externo, retención y recuperación continua mediante WAL/PITR.
 
-Se preparó una etapa adicional de seguridad en `app/security.py`, `app/schemas.py` y `app/postgres_server.py`: secretos de producción con cierre preventivo, cookies HttpOnly/CSRF, vencimiento y revocación de sesiones, límite de intentos, validación Pydantic, Trusted Host, encabezados de seguridad, límite de cuerpo y documentación API deshabilitada por defecto en producción. También se agregaron `SECURITY.md`, `DEPLOY_LOCAL_NETWORK.md` y `tests/test_postgres_security.py`. Se corrigió la interacción de los botones internos para que la CSP no bloquee las acciones dinámicas, sin `eval` ni `unsafe-inline`; el ejecutable de escritorio reconstruye `app` y sirve `app.js?v=25` con los filtros de Demoras, la interfaz del cotizador y Horarios. La fuente está compilada y el backend FastAPI/PostgreSQL fue validado dentro del contenedor temporal aislado.
+La seguridad común vive en `app/security.py`; valida secretos, contraseñas, CSRF, sesiones y límites de ingreso. Producción exige `PUBLIC_BASE_URL` con HTTPS porque las cookies llevan `Secure`; el backend debe quedar detrás de un proxy TLS. `SECURITY.md` y `DEPLOY_LOCAL_NETWORK.md` contienen el contrato vigente. Los servidores ya no se importan entre sí: las reglas compartidas están en módulos de dominio descritos en `ARCHITECTURE.md`.
 
-El contenedor activo fue reconstruido con la versión 1.13.0 y respondió `/health`; `app`, `db` y `backup` quedaron activos y saludables. No usar `docker compose down -v`, no restaurar sobre `librodetrabajo_postgres_data` y no tocar `centro_operativo.db` (hash protegido actual: `820BB8ACB27A63008F572D61896ED91E6FAC597A9CFE035C36C86F8689D4148C`). La suite PostgreSQL temporal pasó y su contenedor efímero fue eliminado.
+El entorno activo de partida se comprobó con la versión 1.29.0; `app`, `db` y `backup` quedaron saludables. La revisión 1.30.0 aprobó 200 pruebas generales y 28 integraciones PostgreSQL sin desplegarse sobre la base operativa. El último dump se restauró en un contenedor temporal: 28 tablas, 554 filas, 0 restricciones inválidas, 0 referencias WFM huérfanas y 0 problemas de secuencias. No usar `docker compose down -v`, no restaurar sobre `librodetrabajo_postgres_data` y no tocar `centro_operativo.db`.
 
 ## Decisiones operativas importantes
 
@@ -56,7 +56,7 @@ El contenedor activo fue reconstruido con la versión 1.13.0 y respondió `/heal
 
 1. Extraer la carpeta completa manteniendo el nombre `Libro de trabajo`.
 2. Abrir esa carpeta como proyecto en Codex.
-3. Enviar al nuevo chat: **“Lee completa `NOTA_PARA_CONTINUAR_EN_OTRA_PC.md`, `README.md` y `CHANGELOG.md`, revisa el proyecto y continúa desde la versión 1.13.0 sin perder la base de datos.”**
+3. Enviar al nuevo chat: **“Lee `NOTA_PARA_CONTINUAR_EN_OTRA_PC.md`, `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, `DEVELOPMENT.md` y `DATA_MANIFEST.md`; revisa Git y Docker y continúa sin tocar la base operativa.”**
 4. Para ejecutar el modo validado, hacer doble clic en `Abrir Centro Operativo.bat` desde una computadora que tenga disponible el entorno local de Codex.
 5. Si el iniciador no encuentra Python, pedir al nuevo chat que adapte el lanzador al entorno de esa computadora o que complete el despliegue Docker.
 
@@ -73,15 +73,15 @@ El contenedor activo fue reconstruido con la versión 1.13.0 y respondió `/heal
 ## Verificación recomendada al retomar
 
 1. Confirmar que se haya creado la copia diaria de `centro_operativo.db` en `backups/`.
-2. Ejecutar las pruebas antes de modificar.
+2. Ejecutar `& .\tools\test_all\run.ps1` antes de modificar.
 3. Abrir la herramienta y revisar Resumen, Avisos, Demoras, Programados, Cotizador, Tiempos de arribo, Roles y Log.
 4. Confirmar que los usuarios trasladados mantienen sus roles.
-5. Mantener actualizado `CHANGELOG.md` y aumentar la versión visible en `app/local_server.py` para cada entrega importante.
+5. Mantener actualizado `CHANGELOG.md` y aumentar `APP_VERSION` en `app/application.py` para cada entrega importante.
 
 ## Próximas prioridades técnicas sugeridas
 
 - Definir credenciales definitivas, destino externo, retención y recuperación WAL/PITR antes del uso en producción.
-- Ejecutar la prueba de restauración en una base PostgreSQL temporal separada y registrar el resultado sin alterar el volumen activo.
+- Repetir periódicamente `tools/postgres_restore_test/run.ps1` sobre un volumen temporal y registrar el resultado sin alterar el volumen activo.
 - Definir objetivos de recuperación (RPO/RTO) y comprobar que el procedimiento documentado los cumple.
 - Definir si los reportes operativos definitivos requieren formato XLSX además de los CSV compatibles con Excel.
 - Definir la política operativa de archivo externo y conservación de las copias automáticas.

@@ -21,33 +21,37 @@ from pydantic import ValidationError
 from psycopg.rows import dict_row
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .local_server import (
-    ALLOWED_GOOGLE_DOMAIN,
+from .application import (
     APP_VERSION,
     DEFAULT_ROLES,
     PERMISSIONS,
-    QUOTE_RULE_EXTRA_COLUMNS,
-    QUOTE_RULE_LEGACY_COPIES,
     SCHEDULE_ROLES,
     current_release_payload,
-    hash_password,
     NOTICE_MANAGE_PERMISSIONS,
+)
+from .identity import (
+    ALLOWED_GOOGLE_DOMAIN,
+    parse_coordinates,
+    route_data,
+    valid_corporate_email,
+    verify_google_id_token,
+)
+from .notices import (
     NOTICE_CLOSED_STATUSES,
     NOTICE_STATUSES,
     notice_duplicates,
     notice_update_permissions,
-    password_needs_rehash,
-    parse_coordinates,
+)
+from .migrations import reconcile_migration_checksums
+from .quotes import (
+    QUOTE_RULE_EXTRA_COLUMNS,
+    QUOTE_RULE_LEGACY_COPIES,
     calculate_extra_km,
     round_currency,
     round_distance,
-    route_data,
     validate_quote_rule_values,
     validate_manual_toll_count,
     validate_manual_distances,
-    valid_corporate_email,
-    verify_google_id_token,
-    verify_password,
 )
 from .tolls import detect_toll_passes
 from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
@@ -62,8 +66,11 @@ from .security import (
     RateLimitState,
     SESSION_COOKIE_NAME,
     csrf_token_for_session,
+    hash_password,
     next_rate_limit_state,
+    password_needs_rehash,
     validate_runtime_environment,
+    verify_password,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -531,6 +538,13 @@ def initialize():
         for delay in database.execute("SELECT id,department,zone FROM delay_zones WHERE zone_id IS NULL").fetchall():
             zone_id=ensure_operational_zone(database,delay["department"],delay["zone"])
             database.execute("UPDATE delay_zones SET zone_id=%s WHERE id=%s",(zone_id,delay["id"]))
+        reconcile_migration_checksums(database, {
+            "audit_contract_v2": "audit_contract_v2",
+            "notice_events_v1": NOTICE_EVENTS_SCHEMA,
+            "transfer_workflow_v1": TRANSFER_EVENTS_SCHEMA,
+            "notice_permissions_v1": "notice_permissions_v1",
+            "standards_workflow_v1": "standards_workflow_v1",
+        }, placeholder="%s")
 
 
 def ensure_operational_zone(database,department,name):

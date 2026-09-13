@@ -1,98 +1,41 @@
 """Modo local: servidor HTTP con SQLite y autenticación corporativa."""
-import base64, hmac, json, math, re, secrets, sqlite3, time
+import hmac, json, math, re, secrets, sqlite3, time
 from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
-from urllib.request import Request, urlopen
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from urllib.parse import parse_qs, quote, urlparse
 try:
     from . import wfm
+    from .application import APP_VERSION, DEFAULT_ROLES, NOTICE_MANAGE_PERMISSIONS, PERMISSIONS, SCHEDULE_ROLES, current_release_payload
     from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
     from .dashboard import build_dashboard_payload
+    from .identity import ALLOWED_GOOGLE_DOMAIN, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
+    from .migrations import ensure_sqlite_migration_registry, reconcile_migration_checksums
+    from .notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
+    from .quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from .tolls import detect_toll_passes
     from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
-    from .releases import release_payload
     from .scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
     from .security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
     from .transfers import TRANSFER_STATUSES, clean_transfer, normalized_status, validate_transition
 except ImportError:
     import wfm
+    from application import APP_VERSION, DEFAULT_ROLES, NOTICE_MANAGE_PERMISSIONS, PERMISSIONS, SCHEDULE_ROLES, current_release_payload
     from delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
     from dashboard import build_dashboard_payload
+    from identity import ALLOWED_GOOGLE_DOMAIN, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
+    from migrations import ensure_sqlite_migration_registry, reconcile_migration_checksums
+    from notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
+    from quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from tolls import detect_toll_passes
     from reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
-    from releases import release_payload
     from scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
     from security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
     from transfers import TRANSFER_STATUSES, clean_transfer, normalized_status, validate_transition
 
 ROOT=Path(__file__).resolve().parent; STATIC=ROOT/"static"; DB_PATH=ROOT.parent/"centro_operativo.db"; BACKUP_DIR=ROOT.parent/"backups"; HOST="127.0.0.1"; PORT=8000
-APP_VERSION="1.29.0"
-CURRENT_VERSION_NOTES=[
-    "Planificación presenta aprobación y rechazo de solicitudes en un único formulario contextual.",
-    "Todas las ventanas WFM anuncian su título, enfocan el primer control y restauran el foco al cerrar.",
-    "Las decisiones bloquean envíos repetidos y mantienen el error visible sin cerrar el formulario.",
-]
-VERSION_NOTES=CURRENT_VERSION_NOTES+[
-    "Demoras reúne evidencia y próximo control en formularios propios para verificar o normalizar.",
-    "Programados permite duplicar con una revisión previa clara de los datos que se conservarán.",
-    "Tiempos de arribo muestra el contexto de la referencia antes de aprobarla o rechazarla.",
-    "Los nuevos flujos conservan validación, foco, errores y protección contra envíos duplicados.",
-    "Navegación móvil con panel lateral, fondo de cierre y control completo mediante teclado.",
-    "Tablas adaptables que conservan el significado de cada columna en pantallas angostas.",
-    "Formularios y ventanas modales con etiquetas asociadas, foco administrado y errores visibles en contexto.",
-    "Estados de carga, reintento y mensajes accesibles en todas las pantallas principales.",
-    "Configuración incorpora Novedades con el historial completo de actualizaciones por versión.",
-    "El registro visible se obtiene del CHANGELOG del proyecto y conserva fecha y detalle de cada entrega.",
-    "Cada versión puede desplegarse sin reemplazar las novedades anteriores.",
-    "Panel y reportes comparten filtros canónicos, fecha operativa de Montevideo y conjuntos completos sin límites silenciosos.",
-    "Auditoría con identidad estable, cambios antes/después, correlación, filtros, exportaciones registradas e historial inmutable.",
-    "Programados con agenda filtrable, asignación responsable, prevención de duplicados, flujo operativo guiado e historial completo.",
-    "Avisos con permisos por rol, colas de pendientes, asignación explícita, prevención de duplicados, cierre guiado e historial completo.",
-    "Solicitudes con revisión de origen, cancelación, historial completo, resolución visible y protección frente a publicaciones posteriores.",
-    "Calendario personal con resumen semanal, descansos, excepciones, continuidad nocturna y horarios históricos integrados.",
-    "Horarios del equipo ahora consume la proyección WFM publicada con turnos, descansos, jornadas partidas y excepciones.",
-    "Arrastre preciso con vista previa de tamaño completo y alta rápida redimensionable de excepciones sobre la grilla.",
-    "Cotizador con catálogo local de peajes: detección por recorrido, doble tramo y desglose histórico.",
-    "Planificación más fluida: publicación semanal atómica, arrastre con punto de agarre estable y mermas móviles dentro del turno.",
-    "Columna de agentes despejada y edición concentrada en un menú contextual sobre la barra del turno.",
-    "Horarios es una vista estrictamente de consulta, con búsqueda en vivo y mediante Enter.",
-    "Horarios reales de Telefonistas para la semana ISO 37: variaciones diarias, descansos opcionales, novedades puntuales y horas extra.",
-    "WFM avanzado: turnos nocturnos y entrecortados, mermas por actividad y portal de solicitudes con aprobación.",
-    "WFM: reglas globales de jornada y descanso, demanda legacy completada sin reescritura silenciosa y auditoría de guardados/publicaciones.",
-    "Libro de Trabajo: identidad visual, icono de escritorio y alta aditiva del equipo de Telefonistas.",
-    "Planificación de horarios: cobertura semanal por día, ventanas por equipo, borradores y publicación individual.",
-    "Horizonte WFM extendido al día siguiente, con identificación visual +1 para cruces de medianoche.",
-    "Horarios con prevención de duplicados y turnos superpuestos, incluso durante la madrugada.",
-    "Copia segura de la semana anterior y carga rápida desde cada celda del calendario.",
-    "Agenda histórica de horarios por semana, persona y rol, con descarga de reportes.",
-    "Configuración de horarios para Telefonistas, Planificadores y Supervisores desde un modal.",
-    "Los campos de cerrajería desp. 22 hs con costo cero ya no se muestran en las tarifas.",
-    "Exportación administrativa del Registro de auditoría como CSV.",
-    "Tarifas del cotizador separadas en costos para asegurados y no asegurados.",
-    "Lanzador de escritorio Windows para iniciar Docker y abrir la aplicación.",
-    "Endurecimiento de sesiones, CSRF, límites de autenticación y validación de entradas.",
-    "Reportes históricos de Avisos con filtros y descarga compatible con Excel.",
-    "Filtros de Demoras por período, estado, departamento, prestación y texto libre.",
-    "Respaldos PostgreSQL horarios, verificados y sin eliminación automática.",
-    "Backend Docker/PostgreSQL llevado a paridad con el modo local.",
-    "Migración conservadora desde SQLite hacia un PostgreSQL vacío.",
-    "Copia de seguridad diaria y consistente de la base SQLite al iniciar.",
-    "Mapa operativo basado únicamente en demoras vigentes y concentración geográfica.",
-    "Registro de auditoría reservado al Administrador y herramientas de supervisión agrupadas.",
-    "Cotizaciones con tarea, recuperación, borrador automático y resumen copiable.",
-    "Mapa interactivo de tiempos de arribo y administración de roles personalizados.",
-]
-
-
-def current_release_payload():
-    return release_payload(APP_VERSION, "2026-09-13", CURRENT_VERSION_NOTES)
-
 SCHEMA="""
 CREATE TABLE IF NOT EXISTS notices(id INTEGER PRIMARY KEY AUTOINCREMENT,task_number TEXT,phone TEXT,notice_type TEXT NOT NULL,audience TEXT NOT NULL DEFAULT 'TODOS',detail TEXT NOT NULL,communicated_by TEXT NOT NULL,managed_by TEXT,status TEXT NOT NULL DEFAULT 'PENDIENTE',comments TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS delay_zones(id INTEGER PRIMARY KEY AUTOINCREMENT,service TEXT NOT NULL,department TEXT NOT NULL,zone TEXT NOT NULL,message TEXT NOT NULL,minutes INTEGER,status TEXT NOT NULL,agent TEXT NOT NULL,created_at TEXT NOT NULL,normalized_at TEXT);
@@ -136,31 +79,6 @@ TRANSFER_EVENTS_SCHEMA="""
 CREATE TABLE IF NOT EXISTS transfer_events(id INTEGER PRIMARY KEY AUTOINCREMENT,transfer_id INTEGER NOT NULL,event_type TEXT NOT NULL,actor TEXT NOT NULL,previous_status TEXT,new_status TEXT,note TEXT,created_at TEXT NOT NULL,FOREIGN KEY(transfer_id) REFERENCES scheduled_transfers(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS transfer_events_transfer_idx ON transfer_events(transfer_id,created_at DESC,id DESC);
 """
-QUOTE_RULE_EXTRA_COLUMNS={
-    "gavilan_insured_base":2140,"gavilan_uninsured_base":2140,
-    "transfer_insured_base":2550,"transfer_uninsured_base":2850,
-    "transfer_special_insured_base":4050,"transfer_special_uninsured_base":4470,
-    "locksmith_mvd_insured_base":1785,"locksmith_mvd_uninsured_base":1930,
-    "locksmith_coast_insured_base":2720,"locksmith_coast_uninsured_base":2950,
-    "locksmith_mvd_after22_insured_base":0,"locksmith_mvd_after22_uninsured_base":0,
-    "locksmith_coast_after22_insured_base":0,"locksmith_coast_after22_uninsured_base":0,
-    "extra_km_insured_rate":120,"extra_km_uninsured_rate":90,
-    "special_extra_km_insured_rate":120,"special_extra_km_uninsured_rate":110,
-    "toll_insured":416,"toll_uninsured":416,
-    "waiting_hour_insured":820,"waiting_hour_uninsured":820,
-    "rescue_hour_insured":900,"rescue_hour_uninsured":900,
-}
-QUOTE_RULE_LEGACY_COPIES={
-    "gavilan_insured_base":"gavilan_base","gavilan_uninsured_base":"gavilan_base",
-    "extra_km_insured_rate":"extra_km_rate","special_extra_km_insured_rate":"special_extra_km_rate",
-}
-PERMISSIONS={"dashboard.view":"Ver resumen","delays.view":"Ver demoras","delays.create":"Registrar demoras","delays.normalize":"Normalizar demoras","notices.view":"Ver avisos","notices.create":"Registrar avisos","notices.comment":"Comentar avisos","notices.assign":"Asignar avisos","notices.change_status":"Cambiar estados de avisos","notices.close":"Cerrar o cancelar avisos","reports.export":"Filtrar y descargar reportes","transfers.view":"Ver programados","transfers.create":"Registrar programados","transfers.manage":"Editar y cambiar el estado de programados","schedules.view":"Ver horarios del equipo","schedules.manage":"Configurar y editar horarios","quotes.view":"Ver cotizador e historial","quotes.create":"Generar cotizaciones","standards.view":"Ver tiempos de arribo","standards.propose":"Proponer referencias de arribo","standards.approve":"Aprobar referencias de arribo","audit.view":"Ver registro de auditoría","settings.manage":"Administrar usuarios, roles y permisos"}
-NOTICE_STATUSES={"PENDIENTE","EN_GESTION","ESPERANDO_RESPUESTA","RESUELTO","CANCELADO"}
-NOTICE_AUDIENCES={"TODOS","TELEFONISTAS","PLANIFICADORES"}
-NOTICE_CLOSED_STATUSES={"RESUELTO","CANCELADO"}
-NOTICE_MANAGE_PERMISSIONS={"notices.comment","notices.assign","notices.change_status","notices.close"}
-DEFAULT_ROLES={"Administrador":set(PERMISSIONS),"Supervisor":set(PERMISSIONS)-{"settings.manage","audit.view"},"Planificador":set(PERMISSIONS)-{"settings.manage","audit.view","reports.export","standards.approve"},"Telefonista":{"dashboard.view","delays.view","notices.view","notices.create","notices.comment","notices.assign","notices.change_status","notices.close","transfers.view","quotes.view","quotes.create","standards.view","standards.propose","schedules.view"}}
-SCHEDULE_ROLES=("Telefonista","Planificador","Supervisor")
 SESSIONS={}
 LOGIN_ATTEMPTS={}
 LOCAL_SESSION_SECONDS=43200
@@ -168,24 +86,7 @@ LOCAL_SESSION_IDLE_SECONDS=1800
 MAX_BODY_BYTES=1024*1024
 LOCAL_APP_SECRET=secrets.token_urlsafe(32)
 GOOGLE_NONCES={}
-GOOGLE_JWKS={"expires":0,"keys":{}}
-ALLOWED_GOOGLE_DOMAIN="portoservicios.com.uy"
 def now(): return datetime.now(timezone.utc).isoformat()
-
-def notice_update_permissions(current, data):
-    """Devuelve los permisos necesarios para una actualización de aviso."""
-    requested=set()
-    if "managed_by" in data and data.get("managed_by") != current.get("managed_by"):
-        requested.add("notices.assign")
-    closing="status" in data and data.get("status") in NOTICE_CLOSED_STATUSES and data.get("status") != current.get("status")
-    if "comments" in data and not closing:
-        requested.add("notices.comment")
-    if "status" in data and data.get("status") != current.get("status"):
-        status=str(data.get("status") or "")
-        if status not in NOTICE_STATUSES:
-            raise ValueError("Estado de aviso inválido")
-        requested.add("notices.close" if status in NOTICE_CLOSED_STATUSES else "notices.change_status")
-    return requested
 
 def schedule_week_start(value):
     parsed=datetime.strptime(str(value),"%Y-%m-%d").date()
@@ -237,6 +138,7 @@ def connect():
 def initialize():
     with connect() as db:
         db.executescript(SCHEMA)
+        ensure_sqlite_migration_registry(db)
         db.executescript(NOTICE_EVENTS_SCHEMA)
         db.executescript(TRANSFER_EVENTS_SCHEMA)
         audit_columns={r[1] for r in db.execute("PRAGMA table_info(audit_events)").fetchall()}
@@ -384,6 +286,17 @@ def initialize():
             sync_standard_zones(db,standard["id"],standard["department"],standard["zone"])
             if not db.execute("SELECT 1 FROM standard_versions WHERE standard_id=?",(standard["id"],)).fetchone():record_standard_version(db,standard["id"],"BASELINE","Sistema","Versión inicial conservada")
         for delay in db.execute("SELECT id,department,zone FROM delay_zones WHERE zone_id IS NULL").fetchall():db.execute("UPDATE delay_zones SET zone_id=? WHERE id=?",(ensure_operational_zone(db,delay["department"],delay["zone"]),delay["id"]))
+        reconcile_migration_checksums(db, {
+            "audit_contract_v2": "audit_contract_v2",
+            "notice_events_v1": NOTICE_EVENTS_SCHEMA,
+            "transfer_workflow_v1": TRANSFER_EVENTS_SCHEMA,
+            "notice_permissions_v1": "notice_permissions_v1",
+            "quotes_permissions_v1": "quotes_permissions_v1",
+            "standards_workflow_v1": "standards_workflow_v1",
+            "audit_admin_only_v1": "audit_admin_only_v1",
+            "reports_export_v1": "reports_export_v1",
+            "schedules_permissions_v1": "schedules_permissions_v1",
+        })
 def rows(db,sql,p=()): return [dict(r) for r in db.execute(sql,p).fetchall()]
 
 def ensure_operational_zone(db,department,name):
@@ -422,32 +335,6 @@ def dashboard_snapshot(db,days=30,current_time=None):
         expected_zone_services=sum(len(expected_services(zone.get("expected_services"))) for zone in zones),
         days=days,current_time=as_of,
     )
-
-def notice_duplicate_reason(existing, candidate):
-    existing_task=str(existing.get("task_number") or "").strip().casefold()
-    candidate_task=str(candidate.get("task_number") or "").strip().casefold()
-    if candidate_task and existing_task==candidate_task:
-        return "Mismo número de tarea"
-    existing_phone=re.sub(r"\D","",str(existing.get("phone") or ""))
-    candidate_phone=re.sub(r"\D","",str(candidate.get("phone") or ""))
-    existing_type=str(existing.get("notice_type") or "").strip().casefold()
-    candidate_type=str(candidate.get("notice_type") or "").strip().casefold()
-    if len(candidate_phone)>=6 and existing_phone==candidate_phone and existing_type==candidate_type:
-        return "Mismo teléfono y motivo"
-    return ""
-
-def notice_duplicates(db, candidate, limit=5):
-    if not str(candidate.get("task_number") or "").strip() and len(re.sub(r"\D","",str(candidate.get("phone") or "")))<6:
-        return []
-    matches=[]
-    for existing in rows(db,"SELECT * FROM notices WHERE status NOT IN ('RESUELTO','CANCELADO') ORDER BY created_at DESC LIMIT 5000"):
-        reason=notice_duplicate_reason(existing,candidate)
-        if reason:
-            summary={key:existing.get(key) for key in ("id","task_number","phone","notice_type","managed_by","status","created_at")}
-            if hasattr(summary["created_at"],"isoformat"):summary["created_at"]=summary["created_at"].isoformat()
-            summary["duplicate_reason"]=reason;matches.append(summary)
-            if len(matches)>=limit:break
-    return matches
 
 def _audit_json(value):
     if value is None:return None
@@ -566,134 +453,6 @@ def register_login_failure(key):
 
 
 def clear_login_failures(key):LOGIN_ATTEMPTS.pop(key,None)
-
-def valid_corporate_email(value):
-    email=str(value or "").strip().lower()
-    return email if re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@portoservicios\.com\.uy",email,re.I) else None
-
-def b64url_decode(value):return base64.urlsafe_b64decode(value+"="*(-len(value)%4))
-
-def google_public_keys():
-    if GOOGLE_JWKS["expires"]>time.time() and GOOGLE_JWKS["keys"]:return GOOGLE_JWKS["keys"]
-    with urlopen(Request("https://www.googleapis.com/oauth2/v3/certs",headers={"User-Agent":"CentroOperativo/1.0"}),timeout=10) as response:
-        data=json.loads(response.read()); cache=response.headers.get("Cache-Control","")
-    max_age_match=re.search(r"max-age=(\d+)",cache); max_age=int(max_age_match.group(1)) if max_age_match else 3600
-    GOOGLE_JWKS["keys"]={item["kid"]:item for item in data.get("keys",[])}; GOOGLE_JWKS["expires"]=time.time()+max_age
-    return GOOGLE_JWKS["keys"]
-
-def verify_google_id_token(token,client_id,expected_nonce):
-    try:
-        encoded_header,encoded_payload,encoded_signature=token.split(".")
-        header=json.loads(b64url_decode(encoded_header)); payload_data=json.loads(b64url_decode(encoded_payload)); jwk=google_public_keys().get(header.get("kid"))
-        if header.get("alg")!="RS256" or not jwk:raise ValueError()
-        public_key=rsa.RSAPublicNumbers(int.from_bytes(b64url_decode(jwk["e"]),"big"),int.from_bytes(b64url_decode(jwk["n"]),"big")).public_key()
-        public_key.verify(b64url_decode(encoded_signature),f"{encoded_header}.{encoded_payload}".encode(),padding.PKCS1v15(),hashes.SHA256())
-        if payload_data.get("aud")!=client_id or payload_data.get("iss") not in ("accounts.google.com","https://accounts.google.com"):raise ValueError()
-        if int(payload_data.get("exp",0))<=int(time.time()) or payload_data.get("nonce")!=expected_nonce:raise ValueError()
-        if payload_data.get("email_verified") not in (True,"true") or str(payload_data.get("hd","")).lower()!=ALLOWED_GOOGLE_DOMAIN:raise ValueError()
-        email=valid_corporate_email(payload_data.get("email"))
-        if not email:raise ValueError()
-        payload_data["email"]=email
-        return payload_data
-    except Exception as exc:raise ValueError("No se pudo verificar la identidad de Google") from exc
-
-def parse_coordinates(value):
-    text=unquote(str(value or "").strip())
-    patterns=[r"^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$",r"!3d(-?\d{1,2}(?:\.\d+)?).*?!4d(-?\d{1,3}(?:\.\d+)?)",r"(?:query|q|destination|origin)=(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)",r"@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)"]
-    for pattern in patterns:
-        match=re.search(pattern,text,re.I)
-        if match:
-            lat,lon=float(match.group(1)),float(match.group(2))
-            if -36.5<=lat<=-29 and -59.5<=lon<=-52:return lat,lon
-    dms=re.search(r"(\d{1,2})[°º]\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)[\"″]?\s*([NS]).*?(\d{1,3})[°º]\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)[\"″]?\s*([EW])",text,re.I)
-    if dms:
-        lat=float(dms.group(1))+float(dms.group(2))/60+float(dms.group(3))/3600
-        lon=float(dms.group(5))+float(dms.group(6))/60+float(dms.group(7))/3600
-        if dms.group(4).upper()=="S":lat=-lat
-        if dms.group(8).upper()=="W":lon=-lon
-        if -36.5<=lat<=-29 and -59.5<=lon<=-52:return lat,lon
-    if text.startswith(("http://","https://")):
-        host=(urlparse(text).hostname or "").lower()
-        if host.endswith(("google.com","google.com.uy","goo.gl","maps.app.goo.gl")):
-            try:
-                response=urlopen(Request(text,headers={"User-Agent":"Mozilla/5.0"}),timeout=8)
-                final=response.geturl(); response.close()
-                if final!=text:return parse_coordinates(final)
-            except Exception:pass
-    raise ValueError("No se pudieron obtener coordenadas. Use un enlace de Google Maps que incluya la ubicación o escriba latitud,longitud.")
-
-def route_data(start,end):
-    lat1,lon1=start; lat2,lon2=end
-    url=f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson&alternatives=false&steps=false"
-    try:
-        with urlopen(Request(url,headers={"User-Agent":"CentroOperativo/1.0"}),timeout=15) as response:data=json.loads(response.read())
-        if data.get("code")!="Ok" or not data.get("routes"):raise ValueError()
-        route=data["routes"][0]
-        return {"km":round_distance(route["distance"]/1000),"coordinates":route.get("geometry",{}).get("coordinates",[])}
-    except Exception as exc:raise ValueError("No se pudo calcular la ruta automáticamente. Verifique las ubicaciones o use la distancia manual.") from exc
-
-def route_km(start,end):return route_data(start,end)["km"]
-
-def validate_manual_distances(trip_km, mobile_km=0, include_mobile=False):
-    """Valida distancias manuales con los mismos límites que PostgreSQL."""
-    try:
-        trip = float(trip_km or 0)
-        mobile = float(mobile_km or 0)
-    except (TypeError, ValueError):
-        raise ValueError("Las distancias manuales deben ser numéricas") from None
-    if not math.isfinite(trip) or not math.isfinite(mobile):
-        raise ValueError("Las distancias manuales deben ser finitas")
-    if trip <= 0 or trip > 1_000_000 or mobile < 0 or mobile > 1_000_000:
-        raise ValueError("La distancia manual debe estar entre 0 y 1.000.000 km")
-    if include_mobile and mobile <= 0:
-        raise ValueError("Ingrese los kilómetros desde la salida del móvil hasta el origen")
-    return trip, mobile
-
-def validate_manual_toll_count(value, include_tolls=False):
-    """Valida el conteo manual de peajes de forma idéntica en ambos backends."""
-    if not include_tolls:
-        return 0
-    if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value or "")):
-        raise ValueError("Ingrese una cantidad válida de peajes")
-    count = int(value)
-    if not 1 <= count <= 100:
-        raise ValueError("Ingrese una cantidad válida de peajes")
-    return count
-
-def round_distance(value):
-    """Redondea kilómetros a dos decimales con criterio comercial estable."""
-    try:
-        number = Decimal(str(value))
-        if not number.is_finite():
-            raise InvalidOperation
-        return float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("La distancia calculada no es válida") from None
-
-def round_currency(value):
-    """Redondea importes a centésimos usando mitad hacia arriba."""
-    try:
-        number = Decimal(str(value))
-        if not number.is_finite():
-            raise InvalidOperation
-        return float(number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("El importe calculado no es válido") from None
-
-def calculate_extra_km(total_km, included_km):
-    """Calcula kilómetros excedentes sin errores de representación binaria."""
-    try:
-        difference = Decimal(str(total_km)) - Decimal(str(included_km))
-        return max(0, int(difference.to_integral_value(rounding=ROUND_CEILING)))
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("No se pudieron calcular los kilómetros excedentes") from None
-
-def validate_quote_rule_values(fields, values):
-    """Aplica límites finitos comunes a tarifas y kilómetros configurables."""
-    for field, value in zip(fields, values):
-        maximum = 1_000_000 if field == "included_km" or field.endswith("_rate") else 1_000_000_000
-        if not math.isfinite(value) or value < 0 or value > maximum:
-            raise ValueError("Las tarifas y kilómetros deben ser finitos y estar dentro del rango permitido")
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*a,**kw): super().__init__(*a,directory=str(STATIC),**kw)

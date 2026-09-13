@@ -1,5 +1,13 @@
 # Registro de versiones
 
+## 1.30.0 — 13 de septiembre de 2026 (Base técnica y despliegue seguro)
+
+- Producción exige `PUBLIC_BASE_URL` con HTTPS y conserva FastAPI en loopback detrás de un proxy TLS, evitando sesiones inutilizables por cookies `Secure` sobre HTTP.
+- Los servidores SQLite y PostgreSQL consumen metadatos, identidad, avisos y cotizador desde módulos compartidos; una prueba impide reintroducir la dependencia entre adaptadores.
+- El registro SQLite incorpora checksums de migraciones históricas y ambos motores verifican que una migración aplicada no cambie; las pruebas cubren bases nuevas e inicialización repetida.
+- `tools/test_all/run.ps1` unifica pruebas Python, sintaxis JavaScript, interfaz sintética, cobertura opcional y la suite PostgreSQL aislada obligatoria.
+- Se documentaron arquitectura, desarrollo, datos locales excluidos de Git, acceso HTTPS y continuidad en otra computadora con cifras vigentes.
+
 ## 1.29.0 — 13 de septiembre de 2026 (Solicitudes WFM accesibles)
 
 - Aprobar o rechazar una solicitud utiliza un único formulario con persona, tipo, fecha, motivo y comentario obligatorio, sin preguntas nativas consecutivas.

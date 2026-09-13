@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import secrets
 from typing import Mapping
+from urllib.parse import urlparse
 
 from cryptography.exceptions import InvalidKey
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
@@ -38,6 +39,7 @@ class RuntimeSecurityConfig:
     app_secret: str
     postgres_password: str
     admin_password: str
+    public_base_url: str
 
 
 @dataclass(frozen=True)
@@ -70,11 +72,27 @@ def validate_runtime_environment(environment: Mapping[str, str]) -> RuntimeSecur
         app_secret=environment.get("APP_SECRET", "desarrollo-no-usar-en-produccion"),
         postgres_password=environment.get("POSTGRES_PASSWORD", "operativa"),
         admin_password=environment.get("ADMIN_PASSWORD", "admin1234"),
+        public_base_url=environment.get("PUBLIC_BASE_URL", "http://localhost:8000").strip().rstrip("/"),
     )
     if app_env == "production":
         _require_secure("APP_SECRET", config.app_secret, 32)
         _require_secure("POSTGRES_PASSWORD", config.postgres_password, 16)
         _require_secure("ADMIN_PASSWORD", config.admin_password, 12)
+        public_url = urlparse(config.public_base_url)
+        if public_url.scheme != "https" or not public_url.netloc or public_url.username or public_url.password:
+            raise RuntimeError(
+                "Configuración de producción inválida: PUBLIC_BASE_URL debe ser una URL pública https:// sin credenciales."
+            )
+        allowed_origins = {
+            item.strip().rstrip("/")
+            for item in environment.get("ALLOWED_ORIGINS", "").split(",")
+            if item.strip()
+        }
+        if config.public_base_url not in allowed_origins:
+            raise RuntimeError("Configuración de producción inválida: PUBLIC_BASE_URL debe estar incluida en ALLOWED_ORIGINS.")
+        allowed_hosts = {item.strip().lower() for item in environment.get("ALLOWED_HOSTS", "").split(",") if item.strip()}
+        if not public_url.hostname or public_url.hostname.lower() not in allowed_hosts:
+            raise RuntimeError("Configuración de producción inválida: el host de PUBLIC_BASE_URL debe estar incluido en ALLOWED_HOSTS.")
     return config
 
 

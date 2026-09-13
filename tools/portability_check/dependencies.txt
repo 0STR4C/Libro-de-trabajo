@@ -1,0 +1,2 @@
+PowerShell 5.1 o superior
+Docker Engine (solo con -RequireImage)

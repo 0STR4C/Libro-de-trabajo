@@ -16,7 +16,7 @@ services:
       retries: 20
 
   tests:
-    image: librodetrabajo-app:latest
+    image: ${TEST_APP_IMAGE:-librodetrabajo-app:latest}
     working_dir: /work
     environment:
       SECURITY_TEST_DATABASE_URL: postgresql://test_runner:test_only_password@test-db:5432/test_operativa

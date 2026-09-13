@@ -14,6 +14,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatorio en producción}
       APP_SECRET: ${APP_SECRET:?APP_SECRET es obligatorio en producción}
       ENABLE_API_DOCS: "false"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL es obligatorio en producción}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS es obligatorio en producción}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS es obligatorio en producción}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD es obligatorio en producción}

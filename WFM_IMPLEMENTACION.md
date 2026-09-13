@@ -1,4 +1,7 @@
-# Planificación de horarios 1.23.0 — actualización del 10 de septiembre de 2026
+# Entrega histórica de Planificación de horarios 1.23.0 — 10 de septiembre de 2026
+
+Este documento conserva el alcance de aquella entrega. La versión vigente y
+los cambios posteriores están en `README.md` y `CHANGELOG.md`.
 
 La planificación sigue siendo diaria y no sustituye ningún dato histórico. Esta
 entrega agrega configuración semanal persistente de requeridos, reglas globales

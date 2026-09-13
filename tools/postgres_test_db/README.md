@@ -43,6 +43,12 @@ Desde la raíz del proyecto:
 & .\tools\postgres_test_db\run.ps1
 ```
 
+Puede validar una imagen candidata sin cambiar etiquetas globales:
+
+```powershell
+& .\tools\postgres_test_db\run.ps1 -ImageName librodetrabajo-app:1.30.0
+```
+
 El comando inicia el servidor, crea una base con nombre aleatorio, ejecuta las
 pruebas, elimina solo esa base y detiene el servidor incluso si la suite falla.
 `test_operativa` y el volumen permanecen disponibles para la próxima ejecución.
@@ -56,7 +62,8 @@ pruebas, elimina solo esa base y detiene el servidor incluso si la suite falla.
 ## Entradas y salidas
 
 La entrada de la suite es el código actual del proyecto, montado como solo lectura
-en el contenedor. La salida es el resultado de las 26 pruebas en la consola.
+en el contenedor. La salida indica la cantidad vigente de pruebas PostgreSQL y
+su resultado en la consola.
 
 Los recursos pertenecen al proyecto Docker `librodetrabajo-tests`. El volumen
 `librodetrabajo-tests_test_postgres_data` conserva los datos de `test_operativa`.

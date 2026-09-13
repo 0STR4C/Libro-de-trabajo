@@ -27,6 +27,7 @@ La protección no sustituye copias fuera del mismo disco, control de acceso al s
 `APP_ENV=production` debe rechazar el arranque si `APP_SECRET`, `POSTGRES_PASSWORD` o `ADMIN_PASSWORD` faltan, son marcadores/predeterminados o no alcanzan la longitud mínima. En producción:
 
 - la sesión usa cookie HttpOnly, Secure y SameSite=Strict;
+- `PUBLIC_BASE_URL` debe ser una URL HTTPS válida y sin credenciales;
 - `/docs`, `/redoc` y OpenAPI permanecen deshabilitados salvo habilitación explícita;
 - los hosts y orígenes de la red local deben declararse de forma explícita;
 - PostgreSQL continúa sin puerto publicado por Compose.
@@ -56,10 +57,13 @@ POSTGRES_USER=operativa
 POSTGRES_PASSWORD=$postgresPassword
 DATABASE_URL=postgresql://operativa:$postgresPassword@db:5432/operativa
 APP_SECRET=$appSecret
+APP_IMAGE=librodetrabajo-app:1.30.0
+APP_BIND_ADDRESS=127.0.0.1
+PUBLIC_BASE_URL=https://NOMBRE_DNS_DEL_SERVIDOR
 SESSION_SECONDS=43200
 SESSION_IDLE_SECONDS=1800
-ALLOWED_HOSTS=localhost,127.0.0.1,NOMBRE_O_IP_LAN_DEL_SERVIDOR
-ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://NOMBRE_O_IP_LAN_DEL_SERVIDOR:8000
+ALLOWED_HOSTS=localhost,127.0.0.1,NOMBRE_DNS_DEL_SERVIDOR
+ALLOWED_ORIGINS=https://NOMBRE_DNS_DEL_SERVIDOR
 MAX_BODY_BYTES=1048576
 ENABLE_API_DOCS=false
 ADMIN_USER=admin
@@ -87,6 +91,6 @@ Si se pierde una computadora:
 
 ## Respaldos y restauración
 
-Los respaldos horarios del servicio `backup` no deben ser servidos por FastAPI ni considerarse protección suficiente si permanecen en el mismo disco. No se carga ninguna copia a una nube desde la aplicación.
+Los respaldos del servicio `backup` se generan cada 15 minutos con la configuración predeterminada. No deben ser servidos por FastAPI ni considerarse protección suficiente si permanecen en el mismo disco. No se carga ninguna copia a una nube desde la aplicación.
 
 Toda restauración de prueba debe usar una base separada, un volumen temporal y un nombre de proyecto Compose distinto. Nunca se debe restaurar un dump de prueba sobre `librodetrabajo_postgres_data`.

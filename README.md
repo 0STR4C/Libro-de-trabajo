@@ -114,7 +114,9 @@ equipo pasa a ser la fuente vigente sin borrar el registro anterior.
 Pendientes: intercambio directo de turnos entre agentes y reglas de cupo/saldo
 de licencia.
 
-Pruebas sin datos reales: `python -B -m unittest discover -s tests -q`;
+Validación completa sin datos reales: `& .\tools\test_all\run.ps1`. El comando
+incluye la suite general, JavaScript, la prueba UI cuando Playwright está
+disponible y la suite PostgreSQL aislada obligatoria.
 `node tools/wfm_offline_build/ui_smoke.cjs` (ver requisitos en esa carpeta).
 
 ### Módulos operativos
@@ -149,7 +151,7 @@ se deben inventar posiciones de cobro.
 - Registro de auditoría de altas, ediciones y cambios de estado.
 - API documentada automáticamente en `/docs` durante desarrollo; en producción la documentación queda deshabilitada salvo habilitación explícita.
 
-La versión actual es **1.29.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y puede consultarse dentro de **Configuración → Novedades**.
+La versión actual es **1.30.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y puede consultarse dentro de **Configuración → Novedades**.
 
 La aplicación **no lee ni escribe Excel durante su funcionamiento**. La planilla fue utilizada solamente para relevar los procesos y definir el modelo inicial.
 
@@ -165,7 +167,7 @@ Este modo facilita el uso en el equipo actual. La versión de despliegue requeri
 
 Al iniciar el modo local, la aplicación crea en `backups/` una copia consistente de `centro_operativo.db`. Se conserva como máximo una copia nueva por fecha y nunca se reemplaza una copia ya existente. Las copias antiguas no se eliminan automáticamente; deben conservarse o archivarse según la política operativa definida por la organización.
 
-En Docker/PostgreSQL, cada alta o actualización se confirma inmediatamente en la base persistente. Además, el servicio `backup` genera cada hora un `pg_dump` verificado en `postgres-backups/`, junto con su SHA-256. El intervalo se configura mediante `BACKUP_INTERVAL_SECONDS`; el mínimo admitido es cinco minutos. No se eliminan copias automáticamente.
+En Docker/PostgreSQL, cada alta o actualización se confirma inmediatamente en la base persistente. Además, el servicio `backup` genera cada 15 minutos un `pg_dump` verificado en `postgres-backups/`, junto con su SHA-256. El intervalo se configura mediante `BACKUP_INTERVAL_SECONDS`; el mínimo admitido es cinco minutos. No se eliminan copias automáticamente.
 
 ### Primer ingreso
 
@@ -178,7 +180,7 @@ El sistema permite usar la cuenta corporativa de Google sin guardar la contrase�
 1. En Google Cloud, crear o seleccionar un proyecto de la organización.
 2. Configurar la pantalla de consentimiento OAuth como **Interna**.
 3. Crear un ID de cliente OAuth de tipo **Aplicación web**.
-4. Agregar `http://localhost:8000`, `http://127.0.0.1:8000` y el origen LAN real (`http://<NOMBRE_O_IP_LAN_DEL_SERVIDOR>:8000`) como orígenes de JavaScript autorizados.
+4. Para desarrollo, agregar `http://localhost:8000` y `http://127.0.0.1:8000`. Para producción, agregar únicamente el origen HTTPS real (`https://<NOMBRE_DNS_DEL_SERVIDOR>`) como origen de JavaScript autorizado.
 5. Copiar el ID terminado en `.apps.googleusercontent.com` en **Configuración → Acceso Google**.
 6. En **Configuración → Usuarios**, asignar el correo corporativo a los usuarios existentes.
 
@@ -218,15 +220,15 @@ La migración se niega a operar si encuentra filas en PostgreSQL. Esto evita mez
 Para producción, copie `.env.example` como `.env`, complete los secretos y ejecute el override que rechaza valores incompletos:
 
 ```powershell
-docker compose -f compose.yaml -f compose.production.yaml up --build -d
+docker compose -f compose.yaml -f compose.production.yaml up -d --no-build --wait
 ```
 
-Ese override mantiene PostgreSQL sin puerto publicado, deshabilita la documentación API y exige `APP_SECRET`, `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, hosts y orígenes explícitos.
+Ese override mantiene PostgreSQL sin puerto publicado, deshabilita la documentación API y exige `APP_SECRET`, `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, `PUBLIC_BASE_URL`, hosts y orígenes explícitos. `PUBLIC_BASE_URL` debe usar HTTPS porque las cookies de producción llevan el atributo `Secure`.
 
 La producción debe usar una imagen ya validada, identificada por etiqueta
 inmutable o digest, mediante `APP_IMAGE`; el arranque no reconstruye la imagen.
-`APP_BIND_ADDRESS` define la interfaz de escucha: use `127.0.0.1` detrás de un
-proxy privado o la IPv4 fija del servidor cuando el acceso LAN sea deliberado.
+`APP_BIND_ADDRESS` define la interfaz de escucha. Use `127.0.0.1` detrás de un
+proxy TLS privado; el navegador debe ingresar por la URL HTTPS configurada.
 Para validar sin modificar servicios:
 
 ```powershell
@@ -254,9 +256,14 @@ Se incluye un lanzador gráfico para Windows en `tools/desktop_launcher/dist/Cen
 
 ### Seguridad y acceso en red local
 
-El backend PostgreSQL incluye configuración separada para desarrollo y producción: en producción exige secretos no predeterminados, limita el host y el tamaño de las solicitudes, usa cookies de sesión `HttpOnly` con protección CSRF, vencimiento absoluto y por inactividad, revocación al cambiar credenciales y límites progresivos de intentos de ingreso. PostgreSQL no publica ningún puerto; la aplicación queda disponible en el puerto 8000 del servidor para las PCs autorizadas de la red local.
+El backend PostgreSQL incluye configuración separada para desarrollo y producción: en producción exige secretos no predeterminados y una URL pública HTTPS, limita el host y el tamaño de las solicitudes, usa cookies de sesión `HttpOnly` con protección CSRF, vencimiento absoluto y por inactividad, revocación al cambiar credenciales y límites progresivos de intentos de ingreso. PostgreSQL no publica ningún puerto; un proxy TLS privado publica la aplicación para las PCs autorizadas de la red local.
 
 La guía [SECURITY.md](SECURITY.md) explica la generación segura de `.env`, la rotación coordinada de credenciales, las sesiones y la restauración aislada de respaldos. [DEPLOY_LOCAL_NETWORK.md](DEPLOY_LOCAL_NETWORK.md) describe la puesta en marcha para otras PCs de la misma red.
+
+La estructura del código se documenta en [ARCHITECTURE.md](ARCHITECTURE.md), el
+flujo de mantenimiento en [DEVELOPMENT.md](DEVELOPMENT.md) y los archivos
+operativos excluidos de Git en [DATA_MANIFEST.md](DATA_MANIFEST.md). La matriz y
+los límites de cobertura están en [TESTING.md](TESTING.md).
 
 ### Estado de esta computadora
 
@@ -266,7 +273,7 @@ El 7 de septiembre de 2026 se reconstruyeron los contenedores y se restauró en 
 docker compose up -d app
 ```
 
-La aplicación queda disponible en `http://<NOMBRE_O_IP_LAN_DEL_SERVIDOR>:8000/`. Configure ese nombre o IP en `ALLOWED_HOSTS` y `ALLOWED_ORIGINS` antes de compartir el acceso. No opere alternativamente sobre SQLite y PostgreSQL: después de elegir PostgreSQL como base activa, toda la operación debe continuar allí para evitar dos historiales divergentes. `centro_operativo.db` y sus copias se conservan como origen protegido y respaldo de la migración.
+El healthcheck interno queda disponible en `http://127.0.0.1:8000/health`; el acceso de usuarios debe publicarse mediante `https://<NOMBRE_DNS_DEL_SERVIDOR>/`. Configure esa URL en `PUBLIC_BASE_URL`, `ALLOWED_HOSTS` y `ALLOWED_ORIGINS` antes de compartir el acceso. No opere alternativamente sobre SQLite y PostgreSQL: después de elegir PostgreSQL como base activa, toda la operación debe continuar allí para evitar dos historiales divergentes. `centro_operativo.db` y sus copias se conservan como origen protegido y respaldo de la migración.
 
 ### Credenciales definitivas
 

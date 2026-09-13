@@ -23,6 +23,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://operativa:operativa@db:5432/operativa}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operativa}
       APP_SECRET: ${APP_SECRET:-desarrollo-no-usar-en-produccion}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       SESSION_SECONDS: ${SESSION_SECONDS:-43200}
       SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-1800}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}

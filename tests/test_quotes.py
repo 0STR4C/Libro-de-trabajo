@@ -487,6 +487,16 @@ class QuoteApiTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(restored)
 
+    def test_schema_migrations_have_checksums_and_initialize_is_idempotent(self):
+        with local_server.connect() as database:
+            before = database.execute("SELECT key, checksum FROM schema_migrations ORDER BY key").fetchall()
+        self.assertTrue(before)
+        self.assertTrue(all(row["checksum"] for row in before))
+        local_server.initialize()
+        with local_server.connect() as database:
+            after = database.execute("SELECT key, checksum FROM schema_migrations ORDER BY key").fetchall()
+        self.assertEqual([(row["key"], row["checksum"]) for row in before], [(row["key"], row["checksum"]) for row in after])
+
 
     def test_delay_takes_precedence_and_normalization_keeps_evidence(self):
         standard = self.request(

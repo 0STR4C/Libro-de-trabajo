@@ -505,6 +505,16 @@ class PostgresSecurityTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(restored)
 
+    def test_schema_migrations_have_checksums_and_initialize_is_idempotent(self):
+        with self.server_module.connect() as database:
+            before = database.execute("SELECT key, checksum FROM schema_migrations ORDER BY key").fetchall()
+        self.assertTrue(before)
+        self.assertTrue(all(row["checksum"] for row in before))
+        self.server_module.initialize()
+        with self.server_module.connect() as database:
+            after = database.execute("SELECT key, checksum FROM schema_migrations ORDER BY key").fetchall()
+        self.assertEqual(before, after)
+
     def test_password_reset_revokes_all_user_sessions(self):
         old_password = "ephemeral-old-password"
         user_id = self.create_test_user("session.revoke.test", "Telefonista", old_password)
