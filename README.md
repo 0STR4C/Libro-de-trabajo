@@ -22,7 +22,7 @@ Aplicación web desarrollada a partir del flujo observado en **Libro de trabajo 
 
 ## Módulos incluidos
 
-### Planificación WFM (1.19.0)
+### Planificación de horarios (1.23.0)
 
 En **Planificación de horarios**, Supervisor (y Administrador por su acceso
 completo) elige día y equipo, abre «Crear turnos y configurar cobertura», selecciona
@@ -43,10 +43,13 @@ La demanda puede ajustarse por rango o por cada franja de media hora. Las
 revisiones legacy con huecos se completan en pantalla con el requerido del día
 sin reescribir la revisión almacenada; la interfaz ya no muestra signos de
 interrogación y guarda cero explícito cuando el operador lo indica. La cobertura siempre cuenta únicamente al equipo
-elegido. El turno completo se mueve desde el punto exacto donde se lo toma y el
+elegido. El turno completo se mueve desde el punto exacto donde se lo toma y
+presenta una vista previa de tamaño completo con agente y franja de destino; el
 descanso se arrastra dentro de su barra. Un clic derecho o doble clic sobre el
-turno abre Editar, Dividir y Agregar excepción sin recargar la columna de agentes.
-Las mermas también se arrastran horizontalmente dentro de los bloques de trabajo.
+turno abre Editar, Dividir, alta rápida de una reunión de 30 minutos y el
+formulario completo de excepción, sin recargar la columna de agentes. Las mermas
+se arrastran y se redimensionan desde sus bordes dentro del turno; un doble clic
+permite cambiar motivo y nota.
 La semana seleccionada puede publicarse completa en una única operación atómica;
 las excepciones al margen habitual de dos horas y los faltantes generan alertas.
 «Sugerir descansos» requiere demanda completa y ofrece una mejora heurística,
@@ -55,8 +58,16 @@ no una garantía óptima.
 **Guardar borrador no publica.** «Publicar día» y «Publicar semana completa» crean
 revisiones nuevas; las anteriores conservan autor y fecha. Otro supervisor no
 puede sobrescribir silenciosamente una revisión nueva. Los agentes consultan sus
-horarios publicados por semana en Horarios, sin acceso a borradores ajenos. Esa
-vista es de solo lectura y filtra por persona, turno o nota al escribir o pulsar Enter.
+horarios publicados por semana en Horarios, sin acceso a borradores ajenos. La
+vista resume horas planificadas, operativas y extra, diferencia un día libre
+publicado de un día todavía no publicado y muestra la continuación de los turnos
+nocturnos sólo con los tramos, descansos y excepciones que alcanzan el nuevo día. Cada
+publicación actualiza atómicamente una proyección normalizada con segmentos,
+entrada, salida, descanso y excepciones; Horarios del equipo consulta esa fuente
+definitiva y combina las publicaciones WFM con los registros históricos que aún
+no hayan sido sustituidos por una publicación nueva. Conserva los nombres de
+usuarios inactivos. La vista es de solo lectura y filtra por persona, equipo,
+turno, nota, excepción, horario u origen al escribir o pulsar Enter.
 El supervisor puede dividir una jornada con la herramienta de tijera, mover cada
 fragmento de forma independiente e insertar Reunión, Capacitación, Licencia o
 Ausencia dentro del turno. Estas actividades se muestran con colores propios y
@@ -66,10 +77,16 @@ También puede consultar la semana publicada de una persona concreta desde la
 grilla, incluidos segmentos, mermas y continuaciones nocturnas.
 
 Telefonistas y demás agentes planificables pueden solicitar una ausencia total
-o parcial y un cambio de turno desde su calendario. Supervisión recibe las
-peticiones en una bandeja por equipo. Aprobar genera una revisión publicada
-nueva, actualiza el Gantt y conserva la revisión anterior; rechazar mantiene el
-horario vigente. Ambos resultados quedan visibles para la persona solicitante.
+o parcial y un cambio de turno desde su calendario; Supervisores también pueden
+presentar y seguir sus propias solicitudes. Cada petición guarda la revisión y
+el horario publicados al momento del envío, evita duplicados pendientes y puede
+ser cancelada por su autor mientras siga pendiente. Supervisión consulta estados,
+tipo, fecha, persona o motivo en una bandeja por equipo. Aprobar genera una
+revisión publicada nueva, actualiza el Gantt y conserva la revisión anterior;
+rechazar mantiene el horario vigente. Si el horario se volvió a publicar después
+del envío, la aprobación exige revisar y confirmar la publicación actual. La
+persona ve la línea de tiempo completa, el comentario de resolución, quién
+resolvió y el horario finalmente aplicado.
 
 El patrón inicial de telefonistas se conserva en
 `data/wfm/telefonistas-horarios-semanales.json`. Se vincula por nombre/alias,
@@ -86,15 +103,16 @@ ella continúa aplicándose el patrón base.
 Almacenamiento aditivo: `wfm_revisions(plan_date, team, revision, published,
 payload, actor_id, created_at)`, `wfm_weekly_requirements(team, weekday,
 required, actor_id, updated_at)`, `wfm_settings(setting_key, value, actor_id,
-updated_at)` y `wfm_requests`, que conserva solicitud, estado, resolución y la
-revisión aplicada. El Administrador puede definir la jornada y el descanso estándar
+updated_at)` y `wfm_requests`, que conserva solicitud, estado, horario y revisión
+de origen, cancelación, resolución y revisión aplicada. El Administrador puede definir la jornada y el descanso estándar
 desde Configuración → General; se aplican a futuros turnos y no reescriben
 históricos. El payload conserva 72 franjas de media hora, los segmentos y las
-excepciones validados del día como una instantánea coherente. No altera `work_schedules` ni la base
-SQLite histórica protegida. Los registros previos continúan separados del nuevo
-calendario WFM y accesibles para supervisores en la vista histórica existente.
-Pendientes: integración del historial anterior en el calendario personal,
-intercambio directo de turnos entre agentes y reglas de cupo/saldo de licencia.
+excepciones validados del día como una instantánea coherente. No altera
+`work_schedules` ni la base SQLite histórica protegida. Los registros previos se
+integran por lectura en Horarios y reportes; una publicación WFM del mismo día y
+equipo pasa a ser la fuente vigente sin borrar el registro anterior.
+Pendientes: intercambio directo de turnos entre agentes y reglas de cupo/saldo
+de licencia.
 
 Pruebas sin datos reales: `python -B -m unittest discover -s tests -q`;
 `node tools/wfm_offline_build/ui_smoke.cjs` (ver requisitos en esa carpeta).
@@ -131,7 +149,7 @@ se deben inventar posiciones de cobro.
 - Registro de auditoría de altas, ediciones y cambios de estado.
 - API documentada automáticamente en `/docs` durante desarrollo; en producción la documentación queda deshabilitada salvo habilitación explícita.
 
-La versión actual es **1.19.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y también se resume dentro de **Configuración → General**.
+La versión actual es **1.29.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y puede consultarse dentro de **Configuración → Novedades**.
 
 La aplicación **no lee ni escribe Excel durante su funcionamiento**. La planilla fue utilizada solamente para relevar los procesos y definir el modelo inicial.
 
@@ -151,9 +169,6 @@ En Docker/PostgreSQL, cada alta o actualización se confirma inmediatamente en l
 
 ### Primer ingreso
 
-- Usuario: `admin`
-- Contraseña inicial: `admin1234`
-
 Al ingresar, use **Configuración** para crear los usuarios del equipo y asignarles uno de los roles iniciales: Administrador, Supervisor, Planificador o Telefonista. Cada usuario debe tener un correo terminado en `@portoservicios.com.uy`; no se admiten cuentas personales ni de otros dominios. Desde **Configuración → Tarifas cotizador** puede cambiar, mediante pestañas separadas, los costos para asegurados y no asegurados (mecánica ligera, especiales, cerrajería, traslados, kilómetros, peajes y horas). Los campos de cerrajería desp. 22 hs con costo cero se conservan para compatibilidad, pero ya no se muestran en la configuración. Los cambios no modifican cotizaciones anteriores. Cambie la contraseña inicial antes de una puesta en producción.
 
 ### Activar el ingreso con Google Workspace
@@ -163,7 +178,7 @@ El sistema permite usar la cuenta corporativa de Google sin guardar la contrase�
 1. En Google Cloud, crear o seleccionar un proyecto de la organización.
 2. Configurar la pantalla de consentimiento OAuth como **Interna**.
 3. Crear un ID de cliente OAuth de tipo **Aplicación web**.
-4. Agregar `http://localhost:8000` y `http://127.0.0.1:8000` como orígenes de JavaScript autorizados.
+4. Agregar `http://localhost:8000`, `http://127.0.0.1:8000` y el origen LAN real (`http://<NOMBRE_O_IP_LAN_DEL_SERVIDOR>:8000`) como orígenes de JavaScript autorizados.
 5. Copiar el ID terminado en `.apps.googleusercontent.com` en **Configuración → Acceso Google**.
 6. En **Configuración → Usuarios**, asignar el correo corporativo a los usuarios existentes.
 
@@ -200,15 +215,48 @@ Para una instalación nueva que no importe los registros SQLite, omita el primer
 
 La migración se niega a operar si encuentra filas en PostgreSQL. Esto evita mezclar o sobrescribir información. Su código y documentación se conservan en `tools/sqlite_to_postgres/`.
 
+Para producción, copie `.env.example` como `.env`, complete los secretos y ejecute el override que rechaza valores incompletos:
+
+```powershell
+docker compose -f compose.yaml -f compose.production.yaml up --build -d
+```
+
+Ese override mantiene PostgreSQL sin puerto publicado, deshabilita la documentación API y exige `APP_SECRET`, `POSTGRES_PASSWORD`, `ADMIN_PASSWORD`, hosts y orígenes explícitos.
+
+La producción debe usar una imagen ya validada, identificada por etiqueta
+inmutable o digest, mediante `APP_IMAGE`; el arranque no reconstruye la imagen.
+`APP_BIND_ADDRESS` define la interfaz de escucha: use `127.0.0.1` detrás de un
+proxy privado o la IPv4 fija del servidor cuando el acceso LAN sea deliberado.
+Para validar sin modificar servicios:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\deployment\verify-production.ps1
+```
+
+Para actualizar, conserve la imagen y configuración actuales, genere un
+respaldo verificado y pruebe la nueva imagen con la suite general y la suite
+PostgreSQL temporal. Cambie `APP_IMAGE` a la entrega aprobada y ejecute:
+
+```powershell
+docker compose -f compose.yaml -f compose.production.yaml up -d --no-build --wait
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\deployment\verify-production.ps1
+```
+
+Si la actualización falla y el esquema es compatible, restaure el valor
+anterior de `APP_IMAGE` y repita el arranque con `--no-build`. Si el esquema o
+los datos fueron afectados, mantenga el volumen fallido para diagnóstico y
+restaure el respaldo en un proyecto y volumen nuevos; nunca use
+`docker compose down -v` sobre la instalación operativa.
+
 ### Ejecutable de escritorio
 
 Se incluye un lanzador gráfico para Windows en `tools/desktop_launcher/dist/CentroOperativo.exe`. Al abrirlo, comprueba Docker Desktop, reconstruye e inicia `app`, espera `/health` y abre el navegador. No ejecuta migraciones ni elimina volúmenes. Requiere .NET 8 Desktop Runtime y que el ejecutable permanezca dentro de esta carpeta del proyecto o una subcarpeta para localizar `compose.yaml`. El código fuente y el procedimiento de compilación están en [tools/desktop_launcher/README.md](tools/desktop_launcher/README.md).
 
-### Seguridad y acceso remoto privado
+### Seguridad y acceso en red local
 
-El backend PostgreSQL incluye configuración separada para desarrollo y producción: en producción exige secretos no predeterminados, limita el host y el tamaño de las solicitudes, usa cookies de sesión `HttpOnly` con protección CSRF, vencimiento absoluto y por inactividad, revocación al cambiar credenciales y límites progresivos de intentos de ingreso. PostgreSQL no publica ningún puerto y la aplicación se enlaza únicamente a `127.0.0.1:8000`.
+El backend PostgreSQL incluye configuración separada para desarrollo y producción: en producción exige secretos no predeterminados, limita el host y el tamaño de las solicitudes, usa cookies de sesión `HttpOnly` con protección CSRF, vencimiento absoluto y por inactividad, revocación al cambiar credenciales y límites progresivos de intentos de ingreso. PostgreSQL no publica ningún puerto; la aplicación queda disponible en el puerto 8000 del servidor para las PCs autorizadas de la red local.
 
-La guía [SECURITY.md](SECURITY.md) explica la generación segura de `.env`, la rotación coordinada de credenciales, las sesiones y la restauración aislada de respaldos. La guía [DEPLOY_REMOTE_PRIVATE.md](DEPLOY_REMOTE_PRIVATE.md) describe el acceso privado mediante Tailscale Serve sin Funnel, sin abrir el router y sin instalar ni configurar Tailscale automáticamente. No se debe marcar `HTTPS_CONFIRMED=true` hasta comprobar el acceso HTTPS real.
+La guía [SECURITY.md](SECURITY.md) explica la generación segura de `.env`, la rotación coordinada de credenciales, las sesiones y la restauración aislada de respaldos. [DEPLOY_LOCAL_NETWORK.md](DEPLOY_LOCAL_NETWORK.md) describe la puesta en marcha para otras PCs de la misma red.
 
 ### Estado de esta computadora
 
@@ -218,7 +266,7 @@ El 7 de septiembre de 2026 se reconstruyeron los contenedores y se restauró en 
 docker compose up -d app
 ```
 
-La aplicación queda disponible en `http://127.0.0.1:8000/`. No opere alternativamente sobre SQLite y PostgreSQL: después de elegir PostgreSQL como base activa, toda la operación debe continuar allí para evitar dos historiales divergentes. `centro_operativo.db` y sus copias se conservan como origen protegido y respaldo de la migración.
+La aplicación queda disponible en `http://<NOMBRE_O_IP_LAN_DEL_SERVIDOR>:8000/`. Configure ese nombre o IP en `ALLOWED_HOSTS` y `ALLOWED_ORIGINS` antes de compartir el acceso. No opere alternativamente sobre SQLite y PostgreSQL: después de elegir PostgreSQL como base activa, toda la operación debe continuar allí para evitar dos historiales divergentes. `centro_operativo.db` y sus copias se conservan como origen protegido y respaldo de la migración.
 
 ### Credenciales definitivas
 
@@ -255,6 +303,6 @@ Avisos incluye filtros por fecha desde/hasta, estado, número de tarea, teléfon
 
 - Cargar el histórico que se decida conservar mediante una migración única.
 - Ejecutar y documentar una restauración de prueba en una base PostgreSQL temporal separada; la suite PostgreSQL de seguridad ya puede repetirse con `tools/postgres_security_test/run.ps1`.
-- Definir credenciales definitivas, configurar HTTPS privado, copias externas con retención y monitoreo.
+- Definir credenciales definitivas, restringir el acceso a la LAN autorizada, copias externas con retención y monitoreo.
 - Cambiar la contraseña inicial del Administrador y coordinar, en una ventana de mantenimiento, cualquier rotación de la contraseña del rol PostgreSQL.
 - Validar con el equipo los catálogos definitivos de estados, prestaciones y departamentos.

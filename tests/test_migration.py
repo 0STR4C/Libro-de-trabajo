@@ -5,7 +5,7 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tools.sqlite_to_postgres.migration_core import TABLES, counts, load_sqlite
+from tools.sqlite_to_postgres.migration_core import OPTIONAL_TABLES, TABLES, counts, load_sqlite
 
 
 class MigrationSourceTests(unittest.TestCase):
@@ -35,6 +35,19 @@ class MigrationSourceTests(unittest.TestCase):
             self.assertTrue(dataset["users"]["rows"][0]["active"])
             self.assertTrue(dataset["quotes"]["rows"][0]["special"])
             self.assertTrue(all(total == 1 for total in counts(dataset).values()))
+
+    def test_legacy_source_keeps_new_tables_explicitly_empty(self):
+        with TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "legacy.db"
+            with closing(sqlite3.connect(source)) as database:
+                for table in TABLES:
+                    if table in OPTIONAL_TABLES:
+                        continue
+                    database.execute(f"CREATE TABLE {table}(id INTEGER)")
+                database.commit()
+            dataset = load_sqlite(source)
+            self.assertTrue(all(dataset[table]["rows"] == [] for table in OPTIONAL_TABLES))
+            self.assertEqual(set(dataset), set(TABLES))
 
 
 if __name__ == "__main__":

@@ -80,7 +80,9 @@ internal sealed class LauncherForm : Form
         _log.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
 
         Controls.AddRange([title, subtitle, _status, _start, _open, _stop, _log]);
-        Shown += async (_, _) => await StartAsync(true);
+        // Abrir el lanzador no debe reconstruir una entrega automáticamente.
+        // La actualización queda reservada al botón explícito.
+        Shown += async (_, _) => await StartAsync(false);
     }
 
     private async Task StartAsync(bool rebuild)

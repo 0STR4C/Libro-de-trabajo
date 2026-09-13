@@ -1,4 +1,5 @@
 from datetime import date, time
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -84,12 +85,13 @@ class NoticeIn(BaseModel):
     task_number: str | None = Field(default=None, max_length=120)
     phone: str | None = Field(default=None, max_length=80)
     notice_type: str = Field(min_length=2, max_length=120)
-    audience: str = Field(default="TODOS", max_length=40)
+    audience: Literal["TODOS", "TELEFONISTAS", "PLANIFICADORES"] = "TODOS"
     detail: str = Field(min_length=2, max_length=4000)
     communicated_by: str = Field(default="", max_length=120)
     managed_by: str | None = Field(default=None, max_length=120)
-    status: str = Field(default="PENDIENTE", max_length=40)
+    status: Literal["PENDIENTE"] = "PENDIENTE"
     comments: str | None = Field(default=None, max_length=4000)
+    allow_duplicate: bool = False
 
 class DelayIn(BaseModel):
     service: str = Field(default="TODAS", max_length=40)
@@ -99,6 +101,45 @@ class DelayIn(BaseModel):
     minutes: int | None = Field(default=None, ge=0, le=1440)
     status: str = Field(default="VIGENTE", max_length=40)
     agent: str = Field(default="", max_length=120)
+    review_minutes: int = Field(default=120, ge=15, le=1440)
+
+
+class DelayNormalizeIn(BaseModel):
+    status: Literal["NORMALIZADO"] = "NORMALIZADO"
+    resolution_note: str = Field(min_length=2, max_length=500)
+
+
+class DelayVerifyIn(BaseModel):
+    review_minutes: int = Field(default=120, ge=15, le=1440)
+    verification_note: str = Field(min_length=2, max_length=500)
+
+
+class ArrivalStandardIn(BaseModel):
+    department: str = Field(min_length=2, max_length=80)
+    zone: str = Field(min_length=2, max_length=500)
+    service: str = Field(min_length=2, max_length=40)
+    minutes_min: int | None = Field(default=None, ge=1, le=1440)
+    minutes_max: int | None = Field(default=None, ge=1, le=1440)
+    note: str | None = Field(default=None, max_length=500)
+    status: Literal["CONFIRMADO", "PROVISIONAL", "SIN_REFERENCIA"] = "PROVISIONAL"
+    source: str | None = Field(default=None, max_length=500)
+    owner: str = Field(default="Supervisión", min_length=2, max_length=120)
+    review_interval_days: int = Field(default=90, ge=1, le=365)
+    effective_from: date | None = None
+    review_due_at: date | None = None
+    active: bool = True
+
+
+class StandardDecisionIn(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    note: str = Field(min_length=2, max_length=500)
+
+
+class ZoneCoverageIn(BaseModel):
+    department: str = Field(min_length=2, max_length=80)
+    name: str = Field(min_length=2, max_length=200)
+    owner: str = Field(default="Supervisión", min_length=2, max_length=120)
+    expected_services: list[Literal["GRÚA", "ML", "SINIESTROS"]] = Field(default_factory=list)
 
 class TransferIn(BaseModel):
     task_number: str = Field(min_length=1, max_length=120)
@@ -108,19 +149,30 @@ class TransferIn(BaseModel):
     origin: str = Field(min_length=2, max_length=500)
     destination: str = Field(min_length=2, max_length=500)
     provider: str | None = Field(default=None, max_length=200)
+    responsible: str | None = Field(default=None, max_length=120)
     planner: str = Field(default="", max_length=120)
-    status: str = Field(default="PENDIENTE", max_length=40)
+    status: Literal["SIN_ASIGNAR"] = "SIN_ASIGNAR"
     comments: str | None = Field(default=None, max_length=4000)
+    allow_duplicate: bool = False
 
 class TransferEdit(BaseModel):
-    task_number: str
-    transfer_type: str
+    task_number: str = Field(min_length=1, max_length=120)
+    transfer_type: str = Field(min_length=2, max_length=80)
     scheduled_date: date
     scheduled_time: time | None = None
-    origin: str
-    destination: str
-    provider: str | None = None
-    comments: str | None = None
+    origin: str = Field(min_length=2, max_length=500)
+    destination: str = Field(min_length=2, max_length=500)
+    provider: str | None = Field(default=None, max_length=200)
+    responsible: str | None = Field(default=None, max_length=120)
+    comments: str | None = Field(default=None, max_length=4000)
+    allow_duplicate: bool = False
+
+
+class TransferStatusIn(BaseModel):
+    status: Literal["SIN_ASIGNAR", "ASIGNADO", "EN_CURSO", "FINALIZADO", "CANCELADO"]
+    provider: str | None = Field(default=None, max_length=200)
+    responsible: str | None = Field(default=None, max_length=120)
+    note: str | None = Field(default=None, max_length=1000)
 
 class ScheduleIn(BaseModel):
     user_id: int = Field(gt=0)
@@ -139,6 +191,12 @@ class ScheduleCopyIn(BaseModel):
 
 class StatusIn(BaseModel):
     status: str = Field(min_length=1, max_length=40)
+    actor: str = Field(default="Operador", max_length=120)
+    managed_by: str | None = Field(default=None, max_length=120)
+    comments: str | None = Field(default=None, max_length=4000)
+
+class NoticeUpdateIn(BaseModel):
+    status: str | None = Field(default=None, max_length=40)
     actor: str = Field(default="Operador", max_length=120)
     managed_by: str | None = Field(default=None, max_length=120)
     comments: str | None = Field(default=None, max_length=4000)

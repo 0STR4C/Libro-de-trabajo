@@ -27,6 +27,7 @@
 @media(max-width:650px){.quote-mode-selector{grid-template-columns:1fr}.quote-options{grid-template-columns:1fr}.quote-tabs{width:100%}.quote-tab{flex:1}.quote-section{padding:18px}.quote-map-resizer{height:418px;min-height:418px}}
 .quote-history-intro{margin:0 0 14px;padding:16px 18px;display:grid;gap:4px}
 .quote-history-intro span{color:#627d98;font-size:12px}
+.quote-history-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px;padding:12px 14px}.quote-history-filters .wide-search{flex:1 1 280px}.quote-history-filters select{min-width:150px}.quote-history-pagination{display:flex;justify-content:center;align-items:center;gap:14px;padding:14px 0 2px;color:#627d98;font-size:12px}.quote-history-pagination button:disabled{opacity:.45;cursor:not-allowed}
 .draft-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid #b9dfd2;border-radius:9px;background:#effaf6;color:#16785d;font-size:12px;font-weight:700}
 .draft-notice.subtle{border-color:#d9e2ec;background:#f8fafc;color:#627d98;font-weight:500}
 .draft-notice button{border:0;background:transparent;color:#1769aa;font-weight:700;cursor:pointer}

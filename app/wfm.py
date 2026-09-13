@@ -1,7 +1,7 @@
 """Planificación diaria versionada. Intervalos semiabiertos de 30 minutos.
 
-El almacenamiento es append-only: publicar no modifica revisiones anteriores.
-No escribe en work_schedules ni transforma registros históricos.
+Las revisiones son append-only. Cada publicación actualiza además una proyección
+normalizada para las vistas de horarios, sin modificar registros históricos.
 """
 import copy
 import json
@@ -57,6 +57,18 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS wfm_revisions (
  published INTEGER NOT NULL, payload TEXT NOT NULL, actor_id BIGINT NOT NULL,
  created_at TEXT NOT NULL, PRIMARY KEY(plan_date,team,revision));
 CREATE INDEX IF NOT EXISTS wfm_published_date ON wfm_revisions(published,plan_date);
+CREATE TABLE IF NOT EXISTS wfm_published_plans (
+ plan_date TEXT NOT NULL, team TEXT NOT NULL, revision INTEGER NOT NULL,
+ actor_id BIGINT NOT NULL, published_at TEXT NOT NULL,
+ PRIMARY KEY(plan_date,team));
+CREATE TABLE IF NOT EXISTS wfm_published_shifts (
+ plan_date TEXT NOT NULL, team TEXT NOT NULL, user_id BIGINT NOT NULL,
+ revision INTEGER NOT NULL, start_slot INTEGER NOT NULL, end_slot INTEGER NOT NULL,
+ segments TEXT NOT NULL, break_slot INTEGER, break_duration INTEGER NOT NULL,
+ overtime_slots INTEGER NOT NULL, exceptions TEXT NOT NULL,
+ actor_id BIGINT NOT NULL, published_at TEXT NOT NULL,
+ PRIMARY KEY(plan_date,team,user_id));
+CREATE INDEX IF NOT EXISTS wfm_published_shifts_date ON wfm_published_shifts(plan_date,team,user_id);
 CREATE TABLE IF NOT EXISTS wfm_weekly_requirements (
  team TEXT NOT NULL, weekday INTEGER NOT NULL, required INTEGER NOT NULL,
  actor_id BIGINT NOT NULL, updated_at TEXT NOT NULL,
@@ -69,9 +81,31 @@ CREATE TABLE IF NOT EXISTS wfm_requests (
  request_type TEXT NOT NULL, requested_date TEXT NOT NULL,
  requested_start INTEGER, requested_end INTEGER, reason TEXT NOT NULL,
  status TEXT NOT NULL, resolution_note TEXT, reviewed_by BIGINT,
- applied_revision INTEGER, created_at TEXT NOT NULL, reviewed_at TEXT);
+ applied_revision INTEGER, created_at TEXT NOT NULL, reviewed_at TEXT,
+ source_revision INTEGER, source_shift TEXT, requester_name TEXT,
+ cancelled_at TEXT, cancelled_by BIGINT);
 CREATE INDEX IF NOT EXISTS wfm_requests_status ON wfm_requests(status,team,requested_date);
 """
+
+WFM_REQUEST_COLUMNS = {
+    'source_revision': 'INTEGER',
+    'source_shift': 'TEXT',
+    'requester_name': 'TEXT',
+    'cancelled_at': 'TEXT',
+    'cancelled_by': 'BIGINT',
+}
+
+
+def ensure_schema(database, postgres=False):
+    """Completa aditivamente el esquema WFM de instalaciones existentes."""
+    if postgres:
+        for column, definition in WFM_REQUEST_COLUMNS.items():
+            database.execute(f'ALTER TABLE wfm_requests ADD COLUMN IF NOT EXISTS {column} {definition}')
+        return
+    existing = {row[1] for row in database.execute('PRAGMA table_info(wfm_requests)').fetchall()}
+    for column, definition in WFM_REQUEST_COLUMNS.items():
+        if column not in existing:
+            database.execute(f'ALTER TABLE wfm_requests ADD COLUMN {column} {definition}')
 
 
 class WfmError(ValueError):
@@ -207,6 +241,7 @@ def validate(data, people, team=None, settings=None):
         if not isinstance(raw_exceptions, list) or len(raw_exceptions) > MAX_EXCEPTIONS:
             raise WfmError(f'Lista de excepciones inválida (máximo {MAX_EXCEPTIONS})')
         exceptions = []
+        exception_ids = set()
         for index, exception in enumerate(raw_exceptions):
             if not isinstance(exception, dict) or exception.get('type') not in EXCEPTION_TYPES:
                 raise WfmError('Tipo de excepción inválido')
@@ -214,12 +249,17 @@ def validate(data, people, team=None, settings=None):
             exception_end = integer(exception.get('end'), exception_start + 1, HORIZON_SLOTS, 'Fin de excepción')
             if not any(segment['start'] <= exception_start and exception_end <= segment['end'] for segment in segments):
                 raise WfmError('La excepción debe quedar completamente contenida en un bloque de trabajo')
+            if any(overlaps(item['start'], item['end'], exception_start, exception_end) for item in exceptions):
+                raise WfmError('Las excepciones de un turno no pueden superponerse')
             note = str(exception.get('note') or '').strip()
             if len(note) > 240:
                 raise WfmError('La nota de la excepción admite hasta 240 caracteres')
             exception_id = str(exception.get('id') or f'exc-{index + 1}').strip()
             if not exception_id or len(exception_id) > 64:
                 raise WfmError('Identificador de excepción inválido')
+            if exception_id in exception_ids:
+                raise WfmError('Las excepciones de un turno deben tener identificadores únicos')
+            exception_ids.add(exception_id)
             clean = dict(id=exception_id, type=exception['type'], start=exception_start, end=exception_end, note=note)
             if exception.get('source_request_id'):
                 clean['source_request_id'] = str(exception['source_request_id'])[:64]
@@ -238,6 +278,176 @@ def validate(data, people, team=None, settings=None):
             locked=locked,
         ))
     return dict(demand=demand, shifts=shifts)
+
+
+def _store_published_plan(query, plan_date, team, revision, plan, actor_id, timestamp):
+    """Reemplaza la proyección vigente sin tocar el historial de revisiones."""
+    query('DELETE FROM wfm_published_shifts WHERE plan_date=? AND team=?', (plan_date, team))
+    query(
+        'INSERT INTO wfm_published_plans(plan_date,team,revision,actor_id,published_at) '
+        'VALUES(?,?,?,?,?) ON CONFLICT(plan_date,team) DO UPDATE SET '
+        'revision=excluded.revision,actor_id=excluded.actor_id,published_at=excluded.published_at',
+        (plan_date, team, revision, actor_id, timestamp),
+    )
+    for shift in plan.get('shifts', []):
+        query(
+            'INSERT INTO wfm_published_shifts('
+            'plan_date,team,user_id,revision,start_slot,end_slot,segments,break_slot,'
+            'break_duration,overtime_slots,exceptions,actor_id,published_at) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (
+                plan_date, team, shift['user_id'], revision, shift['start'], shift['end'],
+                json.dumps(shift_segments(shift)), shift.get('break'), shift.get('break_duration', 1),
+                shift.get('overtime_slots', 0), json.dumps(shift.get('exceptions', [])),
+                actor_id, timestamp,
+            ),
+        )
+
+
+def _published_row(plan_date, team, revision, shift, person, timestamp):
+    start, end = shift['start'], shift['end']
+    plan_day = date.fromisoformat(plan_date)
+    return dict(
+        id=f'{plan_date}:{team}:{shift["user_id"]}', user_id=shift['user_id'],
+        schedule_date=plan_date,
+        week_start=(plan_day-timedelta(days=plan_day.weekday())).isoformat(),
+        role_name=team, team=team, display_name=person.get('display_name', 'Usuario no disponible'),
+        shift_name='Jornada partida' if len(shift_segments(shift)) > 1 else 'Turno publicado',
+        start_time=f'{(start % 48)//2:02d}:{"30" if start % 2 else "00"}',
+        end_time=f'{(end % 48)//2:02d}:{"30" if end % 2 else "00"}',
+        start_slot=start, end_slot=end, crosses_midnight=end > 48,
+        segments=shift_segments(shift), break_slot=shift.get('break'),
+        break_duration=shift.get('break_duration', 1),
+        overtime_slots=shift.get('overtime_slots', 0), exceptions=shift.get('exceptions', []),
+        notes='', revision=revision, published_at=str(timestamp), source='wfm',
+        created_by='', created_at=str(timestamp), updated_at=str(timestamp),
+    )
+
+
+def _slot_from_time(value):
+    if value is None:
+        return None
+    text = value.isoformat() if hasattr(value, 'isoformat') else str(value)
+    try:
+        hours, minutes = text[:5].split(':')
+        return int(hours) * 2 + int(minutes) // 30
+    except (TypeError, ValueError):
+        return None
+
+
+def _published_schedules(query, params, postgres):
+    raw_week = params.get('week')
+    if raw_week:
+        requested = date.fromisoformat(day(raw_week))
+        first = requested-timedelta(days=requested.weekday())
+        start, end = first.isoformat(), (first+timedelta(days=6)).isoformat()
+    else:
+        raw_start, raw_end = params.get('date_from'), params.get('date_to')
+        start = day(raw_start) if raw_start else '1970-01-01'
+        end = day(raw_end) if raw_end else '2100-12-31'
+    span = (date.fromisoformat(end)-date.fromisoformat(start)).days
+    if span < 0 or (not raw_week and raw_start and raw_end and span > 366):
+        raise WfmError('El período publicado debe estar ordenado y abarcar hasta 367 días')
+    team = str(params.get('team') or params.get('role') or '').strip()
+    if team and team not in TEAMS:
+        raise WfmError('Equipo inválido')
+    try:
+        employee_id = int(params['employee_id']) if params.get('employee_id') else None
+    except (TypeError, ValueError):
+        raise WfmError('Persona inválida') from None
+    people = {row['id']: dict(row) for row in query(
+        'SELECT u.id,u.display_name,u.active,r.name role_name FROM users u JOIN roles r ON r.id=u.role_id'
+    ).fetchall()}
+    plans = query(
+        'SELECT * FROM wfm_published_plans WHERE plan_date>=? AND plan_date<=? '
+        'ORDER BY plan_date DESC,team LIMIT 20000',
+        (start, end),
+    ).fetchall()
+    projected = {
+        ((row['plan_date'].isoformat() if hasattr(row['plan_date'], 'isoformat') else str(row['plan_date'])), row['team']): int(row['revision'])
+        for row in plans
+    }
+    stored = query(
+        'SELECT * FROM wfm_published_shifts WHERE plan_date>=? AND plan_date<=? '
+        'ORDER BY plan_date DESC,team,user_id LIMIT 20000',
+        (start, end),
+    ).fetchall()
+    result = []
+    for record in stored:
+        item = dict(record)
+        plan_date = item['plan_date'].isoformat() if hasattr(item['plan_date'], 'isoformat') else str(item['plan_date'])
+        shift = dict(
+            user_id=item['user_id'], start=item['start_slot'], end=item['end_slot'],
+            segments=json.loads(item['segments']), break_duration=item['break_duration'],
+            overtime_slots=item['overtime_slots'], exceptions=json.loads(item['exceptions']),
+            **{'break': item['break_slot']},
+        )
+        result.append(_published_row(plan_date, item['team'], item['revision'], shift, people.get(item['user_id'], {}), item['published_at']))
+    revisions = query(
+        'SELECT * FROM wfm_revisions WHERE published=1 AND plan_date>=? AND plan_date<=? '
+        'ORDER BY plan_date DESC,team,revision DESC LIMIT 20000',
+        (start, end),
+    ).fetchall()
+    seen = set()
+    published_plan_keys = set(projected)
+    for record in revisions:
+        item = dict(record)
+        plan_date = item['plan_date'].isoformat() if hasattr(item['plan_date'], 'isoformat') else str(item['plan_date'])
+        key = (plan_date, item['team'])
+        if key in seen:
+            continue
+        seen.add(key)
+        published_plan_keys.add(key)
+        if projected.get(key, 0) >= int(item['revision']):
+            continue
+        for shift in normalize_plan(json.loads(item['payload'])).get('shifts', []):
+            result.append(_published_row(plan_date, item['team'], item['revision'], shift, people.get(shift['user_id'], {}), item['created_at']))
+    legacy = query(
+        'SELECT s.*,COALESCE(u.display_name,\'Usuario no disponible\') display_name,'
+        'COALESCE(NULLIF(s.role_name,\'\'),r.name,\'\') effective_role '
+        'FROM work_schedules s LEFT JOIN users u ON u.id=s.user_id '
+        'LEFT JOIN roles r ON r.id=u.role_id WHERE s.schedule_date>=? AND s.schedule_date<=? '
+        'ORDER BY s.schedule_date,s.start_time,s.id',
+        (start, end),
+    ).fetchall()
+    for record in legacy:
+        item = dict(record)
+        plan_date = item['schedule_date'].isoformat() if hasattr(item['schedule_date'], 'isoformat') else str(item['schedule_date'])
+        legacy_team = item.get('effective_role') or item.get('role_name') or ''
+        if (plan_date, legacy_team) in published_plan_keys:
+            continue
+        start_slot, end_slot = _slot_from_time(item.get('start_time')), _slot_from_time(item.get('end_time'))
+        if start_slot is not None and end_slot is not None and end_slot <= start_slot:
+            end_slot += 48
+        segments = [dict(start=start_slot, end=end_slot)] if start_slot is not None and end_slot is not None else []
+        result.append(dict(
+            id=f'legacy:{item["id"]}', user_id=item['user_id'], schedule_date=plan_date,
+            week_start=(item['week_start'].isoformat() if hasattr(item['week_start'], 'isoformat') else str(item['week_start'])),
+            role_name=legacy_team, team=legacy_team, display_name=item['display_name'],
+            shift_name=item.get('shift_name') or 'Horario histórico',
+            start_time=(str(item.get('start_time'))[:5] if item.get('start_time') is not None else None),
+            end_time=(str(item.get('end_time'))[:5] if item.get('end_time') is not None else None),
+            start_slot=start_slot, end_slot=end_slot,
+            crosses_midnight=bool(end_slot is not None and end_slot > 48), segments=segments,
+            break_slot=None, break_duration=0, overtime_slots=0, exceptions=[], revision=None,
+            published_at=(item['updated_at'].isoformat() if hasattr(item['updated_at'], 'isoformat') else str(item['updated_at'])),
+            source='legacy', notes=item.get('notes') or '', created_by=item.get('created_by') or '',
+            created_at=(item['created_at'].isoformat() if hasattr(item['created_at'], 'isoformat') else str(item['created_at'])),
+            updated_at=(item['updated_at'].isoformat() if hasattr(item['updated_at'], 'isoformat') else str(item['updated_at'])),
+        ))
+    query_text = str(params.get('q') or '').strip().casefold()
+    filtered = []
+    for row in result:
+        if team and row['team'] != team:
+            continue
+        if employee_id is not None and row['user_id'] != employee_id:
+            continue
+        exception_text = ' '.join(f"{item.get('type','')} {item.get('note','')}" for item in row['exceptions'])
+        time_text = f"{row.get('start_time') or ''} {row.get('end_time') or ''}"
+        if query_text and query_text not in ' '.join((row['display_name'], row['team'], row['shift_name'], row.get('notes', ''), exception_text, time_text, row.get('source', ''))).casefold():
+            continue
+        filtered.append(row)
+    return sorted(filtered, key=lambda row: (row['schedule_date'], row['start_slot'] if row['start_slot'] is not None else -1, row['display_name']))
 
 
 def optimize(plan, team=None):
@@ -362,7 +572,9 @@ def weekly_template(team):
     try:
         source = json.loads(WEEKLY_TEMPLATE_PATH.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
-        return []
+        # La ausencia de datos WFM debe comportarse como una plantilla vacía
+        # para que los consumidores puedan aplicar sus validaciones normales.
+        return {}
     if source.get('team') != team or not isinstance(source.get('people'), list):
         return {}
     return source
@@ -519,17 +731,19 @@ def _serializable_record(record):
 
 
 def _request_rows(query, actor, params, postgres):
-    active = 'TRUE' if postgres else '1'
     sql = (
-        'SELECT q.*,u.display_name FROM wfm_requests q '
-        'JOIN users u ON u.id=q.user_id WHERE u.active=' + active
+        'SELECT q.*,COALESCE(q.requester_name,u.display_name,\'Usuario no disponible\') display_name,'
+        'reviewer.display_name reviewer_name FROM wfm_requests q '
+        'LEFT JOIN users u ON u.id=q.user_id '
+        'LEFT JOIN users reviewer ON reviewer.id=q.reviewed_by WHERE TRUE'
     )
     values = []
-    if manager(actor):
+    own_scope = params.get('scope') == 'mine'
+    if manager(actor) and not own_scope:
         status = params.get('status')
         team = params.get('team')
         if status:
-            if status not in ('PENDIENTE', 'APROBADA', 'RECHAZADA'):
+            if status not in ('PENDIENTE', 'APROBADA', 'RECHAZADA', 'CANCELADA'):
                 raise WfmError('Estado de solicitud inválido')
             sql += ' AND q.status=?'
             values.append(status)
@@ -538,11 +752,51 @@ def _request_rows(query, actor, params, postgres):
                 raise WfmError('Equipo inválido')
             sql += ' AND q.team=?'
             values.append(team)
+        request_type = params.get('request_type')
+        if request_type:
+            if request_type not in ('AUSENCIA', 'CAMBIO_TURNO'):
+                raise WfmError('Tipo de solicitud inválido')
+            sql += ' AND q.request_type=?'
+            values.append(request_type)
+        date_from, date_to = params.get('date_from'), params.get('date_to')
+        if date_from and date_to and day(date_from) > day(date_to):
+            raise WfmError('El período de solicitudes no está ordenado')
+        if date_from:
+            sql += ' AND q.requested_date>=?'
+            values.append(day(date_from))
+        if date_to:
+            sql += ' AND q.requested_date<=?'
+            values.append(day(date_to))
+        search = str(params.get('q') or '').strip()
+        if search:
+            sql += (' AND lower(COALESCE(q.requester_name,u.display_name,\'\')||\' \'||q.reason||\' \'||'
+                    'COALESCE(q.resolution_note,\'\')) LIKE lower(?)')
+            values.append(f'%{search}%')
     else:
         sql += ' AND q.user_id=?'
         values.append(actor['id'])
-    sql += ' ORDER BY CASE q.status WHEN \'PENDIENTE\' THEN 0 ELSE 1 END,q.created_at DESC'
-    return [_serializable_record(row) for row in query(sql, tuple(values)).fetchall()]
+    sql += ' ORDER BY CASE q.status WHEN \'PENDIENTE\' THEN 0 ELSE 1 END,q.created_at DESC LIMIT 1000'
+    result = []
+    for row in query(sql, tuple(values)).fetchall():
+        item = _serializable_record(row)
+        if item.get('source_shift'):
+            try:
+                item['source_shift'] = json.loads(item['source_shift'])
+            except (TypeError, json.JSONDecodeError):
+                item['source_shift'] = None
+        if item.get('status') == 'APROBADA' and item.get('applied_revision') is not None:
+            revision = query(
+                'SELECT payload FROM wfm_revisions WHERE plan_date=? AND team=? AND revision=? LIMIT 1',
+                (item['requested_date'], item['team'], item['applied_revision']),
+            ).fetchone()
+            if revision:
+                plan = normalize_plan(json.loads(dict(revision)['payload']))
+                item['applied_shift'] = next(
+                    (dict(shift) for shift in plan.get('shifts', []) if shift.get('user_id') == item['user_id']),
+                    None,
+                )
+        result.append(item)
+    return result
 
 
 def _request_interval(data, required):
@@ -555,8 +809,6 @@ def _request_interval(data, required):
 
 
 def _create_request(query, actor, data, postgres):
-    if manager(actor):
-        raise WfmError('Las solicitudes personales se crean desde la vista de Agente', 403)
     if actor.get('role_name') not in TEAMS:
         raise WfmError('El rol no pertenece a un equipo planificable', 403)
     if not isinstance(data, dict):
@@ -570,23 +822,77 @@ def _create_request(query, actor, data, postgres):
         raise WfmError('El motivo debe tener entre 3 y 500 caracteres')
     start, end = _request_interval(data, request_type == 'CAMBIO_TURNO')
     if postgres:
+        query('SELECT pg_advisory_xact_lock(73139030)')
         query('SELECT pg_advisory_xact_lock(73139031)')
     else:
         query('BEGIN IMMEDIATE')
+    published = query(
+        'SELECT * FROM wfm_revisions WHERE plan_date=? AND team=? AND published=1 '
+        'ORDER BY revision DESC LIMIT 1',
+        (requested_date, actor['role_name']),
+    ).fetchone()
+    if not published:
+        raise WfmError('No hay un horario publicado para esa fecha', 409)
+    published = dict(published)
+    source_plan = normalize_plan(json.loads(published['payload']))
+    source_shift = next(
+        (dict(item) for item in source_plan.get('shifts', []) if item.get('user_id') == actor['id']),
+        None,
+    )
+    if not source_shift:
+        raise WfmError('No tenés un turno publicado en esa fecha', 409)
+    if request_type == 'AUSENCIA' and start is not None:
+        if not any(segment['start'] <= start and end <= segment['end'] for segment in shift_segments(source_shift)):
+            raise WfmError('La ausencia parcial debe quedar dentro de un bloque del turno publicado')
+    duplicate = query(
+        'SELECT request_id FROM wfm_requests WHERE user_id=? AND requested_date=? AND status=\'PENDIENTE\' LIMIT 1',
+        (actor['id'], requested_date),
+    ).fetchone()
+    if duplicate:
+        raise WfmError('Ya tenés una solicitud pendiente para esa fecha', 409)
     request_id = uuid4().hex
     timestamp = datetime.now(timezone.utc).isoformat()
     query(
         'INSERT INTO wfm_requests(request_id,user_id,team,request_type,requested_date,'
-        'requested_start,requested_end,reason,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        'requested_start,requested_end,reason,status,created_at,source_revision,source_shift,requester_name) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
         (request_id, actor['id'], actor['role_name'], request_type, requested_date,
-         start, end, reason, 'PENDIENTE', timestamp),
+         start, end, reason, 'PENDIENTE', timestamp, int(published['revision']),
+         json.dumps(source_shift), actor.get('display_name') or 'Usuario'),
     )
     return dict(
         request_id=request_id, user_id=actor['id'], team=actor['role_name'],
         request_type=request_type, requested_date=requested_date,
         requested_start=start, requested_end=end, reason=reason,
-        status='PENDIENTE', created_at=timestamp,
+        status='PENDIENTE', created_at=timestamp, source_revision=int(published['revision']),
+        source_shift=source_shift, display_name=actor.get('display_name') or 'Usuario',
     )
+
+
+def _cancel_request(query, actor, data, postgres):
+    request_id = str(data.get('request_id') or '').strip() if isinstance(data, dict) else ''
+    if not request_id:
+        raise WfmError('Solicitud inválida')
+    if postgres:
+        query('SELECT pg_advisory_xact_lock(73139031)')
+    else:
+        query('BEGIN IMMEDIATE')
+    suffix = ' FOR UPDATE' if postgres else ''
+    request = query('SELECT * FROM wfm_requests WHERE request_id=?' + suffix, (request_id,)).fetchone()
+    if not request:
+        raise WfmError('Solicitud inexistente', 404)
+    request = _serializable_record(request)
+    if request['user_id'] != actor['id']:
+        raise WfmError('Solo podés cancelar una solicitud propia', 403)
+    if request['status'] != 'PENDIENTE':
+        raise WfmError('Solo se pueden cancelar solicitudes pendientes', 409)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    query(
+        'UPDATE wfm_requests SET status=\'CANCELADA\',cancelled_at=?,cancelled_by=? WHERE request_id=?',
+        (timestamp, actor['id'], request_id),
+    )
+    request.update(status='CANCELADA', cancelled_at=timestamp, cancelled_by=actor['id'])
+    return request
 
 
 def _decide_request(query, actor, data, postgres):
@@ -625,13 +931,23 @@ def _decide_request(query, actor, data, postgres):
             f'WHERE u.active={active} AND r.name=? ORDER BY u.display_name',
             (team,),
         ).fetchall()]
+        # Una solicitud siempre parte de la publicación vigente. Un borrador
+        # posterior pertenece al supervisor y no debe publicarse implícitamente.
         current = query(
-            'SELECT * FROM wfm_revisions WHERE plan_date=? AND team=? ORDER BY revision DESC LIMIT 1',
+            'SELECT * FROM wfm_revisions WHERE plan_date=? AND team=? AND published=1 ORDER BY revision DESC LIMIT 1',
             (plan_date, team),
         ).fetchone()
         if not current:
             raise WfmError('No existe un horario para aplicar esta solicitud', 409)
         current = dict(current)
+        source_revision = request.get('source_revision')
+        if source_revision is not None and int(source_revision) != int(current['revision']):
+            if data.get('confirm_current_revision') is not True:
+                raise WfmError(
+                    f'El horario publicado cambió desde la solicitud (revisión {source_revision} → '
+                    f'{current["revision"]}). Revisá el horario vigente antes de confirmar.',
+                    409,
+                )
         plan = normalize_plan(json.loads(current['payload']))
         shift = next((item for item in plan.get('shifts', []) if item.get('user_id') == request['user_id']), None)
         if not shift:
@@ -640,10 +956,19 @@ def _decide_request(query, actor, data, postgres):
             segments = shift_segments(shift)
             exception_start = request['requested_start'] if request['requested_start'] is not None else segments[0]['start']
             exception_end = request['requested_end'] if request['requested_end'] is not None else segments[-1]['end']
-            shift.setdefault('exceptions', []).append(dict(
-                id=f'request-{request_id}', type='Ausencia', start=exception_start,
-                end=exception_end, note=request['reason'], source_request_id=request_id,
-            ))
+            affected = []
+            for segment in segments:
+                start = max(exception_start, segment['start'])
+                end = min(exception_end, segment['end'])
+                if start < end:
+                    affected.append((start, end))
+            if not affected:
+                raise WfmError('La ausencia no coincide con un bloque de trabajo', 409)
+            for index, (start, end) in enumerate(affected, 1):
+                shift.setdefault('exceptions', []).append(dict(
+                    id=f'request-{request_id}-{index}', type='Ausencia', start=start,
+                    end=end, note=request['reason'], source_request_id=request_id,
+                ))
         else:
             requested_start, requested_end = request['requested_start'], request['requested_end']
             shift['segments'] = [dict(start=requested_start, end=requested_end)]
@@ -651,16 +976,21 @@ def _decide_request(query, actor, data, postgres):
             shift['break'] = default_break(shift['segments'], shift.get('break_duration', 1))
             shift['exceptions'] = [
                 exception for exception in shift.get('exceptions', [])
-                if overlaps(exception['start'], exception['end'], requested_start, requested_end)
+                if requested_start <= exception['start'] and exception['end'] <= requested_end
             ]
         settings = load_wfm_settings(query, actor['id'])
         plan = validate(plan, {person['id'] for person in people}, team, settings)
-        applied_revision = int(current['revision']) + 1
+        next_revision = query(
+            'SELECT COALESCE(MAX(revision), 0) AS revision FROM wfm_revisions WHERE plan_date=? AND team=?',
+            (plan_date, team),
+        ).fetchone()
+        applied_revision = int(next_revision['revision']) + 1
         query(
             'INSERT INTO wfm_revisions(plan_date,team,revision,published,payload,actor_id,created_at) '
             'VALUES(?,?,?,?,?,?,?)',
             (plan_date, team, applied_revision, 1, json.dumps(plan), actor['id'], timestamp),
         )
+        _store_published_plan(query, plan_date, team, applied_revision, plan, actor['id'], timestamp)
     status = 'APROBADA' if decision == 'APROBAR' else 'RECHAZADA'
     query(
         'UPDATE wfm_requests SET status=?,resolution_note=?,reviewed_by=?,applied_revision=?,reviewed_at=? '
@@ -669,7 +999,7 @@ def _decide_request(query, actor, data, postgres):
     )
     request.update(
         status=status, resolution_note=note or None, reviewed_by=actor['id'],
-        applied_revision=applied_revision, reviewed_at=timestamp,
+        reviewer_name=actor.get('display_name'), applied_revision=applied_revision, reviewed_at=timestamp,
     )
     return request
 
@@ -699,12 +1029,27 @@ def _publish_week(query, actor, params, data, postgres):
     settings = load_wfm_settings(query, actor['id'])
     requirements = load_requirements(query, team, actor['id'])
     drafts, missing, already_published, alert_messages = [], [], [], []
+    expected_revisions = data.get('expected_revisions')
+    if expected_revisions is not None and not isinstance(expected_revisions, dict):
+        raise WfmError('Las revisiones esperadas de la semana son inválidas')
     for offset in range(7):
         plan_date = (first_day + timedelta(days=offset)).isoformat()
         current = query(
             'SELECT * FROM wfm_revisions WHERE plan_date=? AND team=? ORDER BY revision DESC LIMIT 1',
             (plan_date, team),
         ).fetchone()
+        if expected_revisions is not None and plan_date in expected_revisions:
+            try:
+                expected = integer(expected_revisions[plan_date], 0, 2**31 - 1, 'Revisión esperada')
+            except (KeyError, TypeError):
+                raise WfmError(f'Revisión esperada inválida para {plan_date}') from None
+            actual = int(current['revision']) if current else 0
+            if expected != actual:
+                raise WfmError(
+                    f'El día {plan_date} cambió mientras revisabas la semana '
+                    f'(esperabas revisión {expected}, ahora está en {actual}). Recargá antes de publicar.',
+                    409,
+                )
         if not current:
             missing.append(plan_date)
             continue
@@ -729,6 +1074,7 @@ def _publish_week(query, actor, params, data, postgres):
             'VALUES(?,?,?,?,?,?,?)',
             (plan_date, team, revision, 1, json.dumps(plan), actor['id'], timestamp),
         )
+        _store_published_plan(query, plan_date, team, revision, plan, actor['id'], timestamp)
     return dict(
         team=team, week=week_start, published_count=len(drafts),
         published_dates=[item[0] for item in drafts],
@@ -747,20 +1093,44 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
         if not 0 <= (date.fromisoformat(end) - date.fromisoformat(start)).days <= 366:
             raise WfmError('El período debe estar entre 0 y 366 días')
         query_start = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
-        records = query('SELECT * FROM wfm_revisions WHERE published=1 AND plan_date>=? AND plan_date<=? ORDER BY revision DESC', (query_start, end)).fetchall()
-        seen, result = set(), []
-        for record in records:
-            r = dict(record)
-            plan_date = r['plan_date'].isoformat() if hasattr(r['plan_date'], 'isoformat') else str(r['plan_date'])
-            key = (plan_date, r['team'])
-            if key in seen:
+        rows = _published_schedules(
+            query,
+            {'date_from': query_start, 'date_to': end, 'employee_id': str(actor['id'])},
+            postgres,
+        )
+        result = []
+        for row in rows:
+            plan_date = row['schedule_date']
+            if plan_date < start and not row.get('crosses_midnight'):
                 continue
-            seen.add(key)
-            for s in normalize_plan(json.loads(r['payload']))['shifts']:
-                if s['user_id'] == actor['id']:
-                    end_date = (date.fromisoformat(plan_date) + timedelta(days=1 if s['end'] > 48 else 0)).isoformat()
-                    result.append(dict(s, date=plan_date, end_date=end_date, team=r['team'], revision=r['revision']))
-        return sorted(result, key=lambda s: (s['date'], s['start']))
+            result.append(dict(
+                id=row['id'], user_id=row['user_id'], date=plan_date,
+                end_date=(date.fromisoformat(plan_date) + timedelta(days=1 if row.get('crosses_midnight') else 0)).isoformat(),
+                team=row['team'], revision=row.get('revision'), source=row.get('source', 'wfm'),
+                shift_name=row.get('shift_name'), notes=row.get('notes', ''),
+                start=row.get('start_slot'), end=row.get('end_slot'), segments=row.get('segments', []),
+                break_duration=row.get('break_duration', 0),
+                overtime_slots=row.get('overtime_slots', 0), exceptions=row.get('exceptions', []),
+                **{'break': row.get('break_slot')},
+            ))
+        published_days = query(
+            'SELECT DISTINCT plan_date FROM wfm_revisions WHERE published=1 AND team=? '
+            'AND plan_date>=? AND plan_date<=?',
+            (actor.get('role_name'), start, end),
+        ).fetchall()
+        occupied = {item['date'] for item in result if item.get('date') >= start}
+        for record in published_days:
+            raw_date = record['plan_date']
+            published_date = raw_date.isoformat() if hasattr(raw_date, 'isoformat') else str(raw_date)
+            if published_date not in occupied:
+                result.append(dict(
+                    id=f'free:{published_date}:{actor["id"]}', user_id=actor['id'], date=published_date,
+                    end_date=published_date, team=actor.get('role_name'), revision=None, source='wfm',
+                    shift_name='Libre publicado', notes='', start=None, end=None, segments=[],
+                    break_duration=0, overtime_slots=0, exceptions=[], published_day=True,
+                    **{'break': None},
+                ))
+        return sorted(result, key=lambda s: (s['date'], s['start'] if s['start'] is not None else -1))
 
     if action == 'requests':
         if method == 'GET':
@@ -768,11 +1138,18 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
         if method == 'POST':
             if isinstance(data, dict) and data.get('operation') == 'decide':
                 return _decide_request(query, actor, data, postgres)
+            if isinstance(data, dict) and data.get('operation') == 'cancel':
+                return _cancel_request(query, actor, data, postgres)
             return _create_request(query, actor, data, postgres)
         raise WfmError('Operación inválida')
 
     if not manager(actor):
         raise WfmError('Planificación exclusiva para Supervisor (Administrador conserva acceso completo)', 403)
+
+    if action == 'published':
+        if method != 'GET':
+            raise WfmError('Operación inválida')
+        return _published_schedules(query, params, postgres)
 
     if action == 'publish-week':
         if method != 'POST':
@@ -910,11 +1287,22 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
                     requirements=requirements, weekly_schedule=weekly_schedule,
                     settings=settings, demand_filled=demand_filled,
                     window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                    exception_types=list(EXCEPTION_TYPES), warnings=warnings(plan, team))
+                    exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
+                    warnings=warnings(plan, team))
     if method != 'POST' or not isinstance(data, dict):
         raise WfmError('Operación inválida')
     if integer(data.get('revision'), 0, 2**31-1, 'Revisión') != revision:
-        raise WfmError('Otro supervisor cambió este plan. Recargá antes de guardar; tu borrador sigue visible.', 409)
+        changed_by = current.get('actor_id') if current else None
+        changed_at = current.get('created_at') if current else None
+        detail = f' La versión actual es la revisión {revision}.'
+        if changed_by is not None:
+            detail += f' Fue guardada por el usuario {changed_by}'
+        if changed_at:
+            detail += f' el {changed_at}.'
+        raise WfmError(
+            'Otro supervisor cambió este plan. Recargá antes de guardar; tu borrador sigue visible.' + detail,
+            409,
+        )
     plan = validate(data, {p['id'] for p in people}, team, settings)
     operation = data.get('operation', 'save')
     if operation not in ('save', 'publish', 'optimize'):
@@ -924,14 +1312,19 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
         return dict(plan, revision=revision, published_revision=published_revision, people=people,
                     requirements=requirements, weekly_schedule=weekly_schedule,
                     settings=settings, window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                    exception_types=list(EXCEPTION_TYPES), warnings=warnings(plan, team))
+                    exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
+                    warnings=warnings(plan, team))
     alerts = warnings(plan, team)
     if operation == 'publish' and alerts and data.get('confirm_exceptions') is not True:
         raise WfmError('Revisá y confirmá las advertencias antes de publicar: ' + '; '.join(alerts), 409)
     revision += 1
+    timestamp = datetime.now(timezone.utc).isoformat()
     query('INSERT INTO wfm_revisions(plan_date,team,revision,published,payload,actor_id,created_at) VALUES(?,?,?,?,?,?,?)',
-          (plan_date, team, revision, int(operation == 'publish'), json.dumps(plan), actor['id'], datetime.now(timezone.utc).isoformat()))
+          (plan_date, team, revision, int(operation == 'publish'), json.dumps(plan), actor['id'], timestamp))
+    if operation == 'publish':
+        _store_published_plan(query, plan_date, team, revision, plan, actor['id'], timestamp)
     return dict(plan, revision=revision, published_revision=revision if operation == 'publish' else published_revision,
-                people=people, requirements=requirements, weekly_schedule=weekly_schedule,
-                settings=settings, window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                exception_types=list(EXCEPTION_TYPES), warnings=alerts)
+                 people=people, requirements=requirements, weekly_schedule=weekly_schedule,
+                 settings=settings, window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
+                 exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
+                 warnings=alerts)

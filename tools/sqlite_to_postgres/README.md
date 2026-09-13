@@ -18,7 +18,7 @@ docker compose --profile migration run --rm migrate
 docker compose up -d app
 ```
 
-La configuración monta `centro_operativo.db` como `/data/centro_operativo.db` con permiso de solo lectura. La tabla nueva `work_schedules` es opcional en fuentes históricas anteriores a Horarios: si no existe, se migra como una tabla vacía sin bloquear el traslado.
+La configuración monta `centro_operativo.db` como `/data/centro_operativo.db` con permiso de solo lectura. Las tablas incorporadas después de la primera versión (`work_schedules`, `toll_catalog` y las tablas `wfm_*`) son opcionales en fuentes históricas: si no existen, se migran como tablas vacías sin bloquear el traslado. Si existen, sus filas se trasladan y se incluyen en el resumen de recuentos.
 
 ## Uso directo
 
@@ -27,6 +27,10 @@ python -m tools.sqlite_to_postgres.migrate centro_operativo.db --database-url "p
 ```
 
 Entradas: archivo SQLite y URL de una base PostgreSQL vacía. Salida: filas importadas conservando sus identificadores. Modifica únicamente la base PostgreSQL indicada; nunca modifica el archivo SQLite.
+
+La herramienta valida `PRAGMA integrity_check` antes de leer el origen y muestra
+los recuentos de todas las tablas, incluidas las opcionales modernas. Si alguna
+tabla de destino ya contiene filas, aborta antes de importar.
 
 ## Prueba mínima
 

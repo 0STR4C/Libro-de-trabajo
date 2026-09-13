@@ -5,6 +5,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY CHANGELOG.md .
 COPY app ./app
 COPY data/wfm ./data/wfm
 COPY tools ./tools

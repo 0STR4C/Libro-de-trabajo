@@ -2,7 +2,7 @@
 
 ## Estado y alcance
 
-La aplicación contiene información operativa. El diseño previsto es: Docker en el servidor, PostgreSQL sin puerto publicado y acceso remoto únicamente mediante una red privada Tailscale. No se debe usar Tailscale Funnel, publicar el puerto 8000 en el router ni modificar el Firewall de Windows como parte de este proyecto.
+La aplicación contiene información operativa. El diseño previsto es: Docker en el servidor, PostgreSQL sin puerto publicado y acceso web limitado a la red local autorizada. No se debe publicar PostgreSQL en la red ni modificar automáticamente el Firewall de Windows como parte de este proyecto.
 
 La base `centro_operativo.db` es un origen histórico protegido. No se usa para la operación PostgreSQL, no se sobrescribe y no se elimina.
 
@@ -18,7 +18,7 @@ Se consideran amenazas principales:
 - pérdida o corrupción del disco que contiene PostgreSQL y sus copias;
 - permisos excesivos en usuarios, roles, tarifas y exportaciones.
 
-La protección no sustituye copias fuera del mismo disco, control de acceso al sistema operativo, actualizaciones de Docker ni la administración de Tailscale.
+La protección no sustituye copias fuera del mismo disco, control de acceso al sistema operativo ni actualizaciones de Docker.
 
 ## Desarrollo y producción
 
@@ -28,8 +28,7 @@ La protección no sustituye copias fuera del mismo disco, control de acceso al s
 
 - la sesión usa cookie HttpOnly, Secure y SameSite=Strict;
 - `/docs`, `/redoc` y OpenAPI permanecen deshabilitados salvo habilitación explícita;
-- los hosts, orígenes y proxy confiable deben declararse de forma explícita;
-- `HTTPS_CONFIRMED=true` solo se establece después de verificar el acceso HTTPS mediante el proxy privado;
+- los hosts y orígenes de la red local deben declararse de forma explícita;
 - PostgreSQL continúa sin puerto publicado por Compose.
 
 La variable `ADMIN_PASSWORD` solo sirve para inicializar una base sin usuarios. La aplicación no cambia automáticamente la contraseña de un administrador ya existente. En una base restaurada, cambiar la contraseña del administrador desde Configuración antes de habilitar el acceso remoto.
@@ -59,15 +58,13 @@ DATABASE_URL=postgresql://operativa:$postgresPassword@db:5432/operativa
 APP_SECRET=$appSecret
 SESSION_SECONDS=43200
 SESSION_IDLE_SECONDS=1800
-TRUSTED_PROXY_IPS=127.0.0.1,::1
-ALLOWED_HOSTS=localhost,127.0.0.1
-ALLOWED_ORIGINS=https://NOMBRE_TAILSCALE
+ALLOWED_HOSTS=localhost,127.0.0.1,NOMBRE_O_IP_LAN_DEL_SERVIDOR
+ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://NOMBRE_O_IP_LAN_DEL_SERVIDOR:8000
 MAX_BODY_BYTES=1048576
 ENABLE_API_DOCS=false
-HTTPS_CONFIRMED=false
 ADMIN_USER=admin
 ADMIN_PASSWORD=$adminPassword
-BACKUP_INTERVAL_SECONDS=3600
+BACKUP_INTERVAL_SECONDS=900
 "@ | Set-Content -LiteralPath $envFile -Encoding utf8
 Remove-Variable adminPassword,appSecret,postgresPassword,appBytes,dbBytes,adminSecure -ErrorAction SilentlyContinue
 ```

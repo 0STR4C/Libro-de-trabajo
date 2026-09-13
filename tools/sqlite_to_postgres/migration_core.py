@@ -13,11 +13,29 @@ TABLES = (
     "notices",
     "delay_zones",
     "scheduled_transfers",
+    "transfer_events",
     "work_schedules",
     "quotes",
+    "toll_catalog",
     "audit_events",
+    "wfm_revisions",
+    "wfm_published_plans",
+    "wfm_published_shifts",
+    "wfm_weekly_requirements",
+    "wfm_settings",
+    "wfm_requests",
 )
-OPTIONAL_TABLES = {"work_schedules"}
+OPTIONAL_TABLES = {
+    "transfer_events",
+    "work_schedules",
+    "toll_catalog",
+    "wfm_revisions",
+    "wfm_published_plans",
+    "wfm_published_shifts",
+    "wfm_weekly_requirements",
+    "wfm_settings",
+    "wfm_requests",
+}
 BOOLEAN_COLUMNS = {"users": {"active"}, "quotes": {"uninsured", "special", "gavilan"}}
 
 
@@ -43,6 +61,12 @@ def load_sqlite(source_path):
                 continue
             columns = [row[1] for row in database.execute(f"PRAGMA table_info({table})")]
             records = [dict(row) for row in database.execute(f"SELECT * FROM {table}")]
+            if table == "scheduled_transfers":
+                if "updated_at" not in columns:
+                    columns.append("updated_at")
+                    for record in records:record["updated_at"] = record.get("created_at")
+                legacy = {"PENDIENTE": "SIN_ASIGNAR", "CONFIRMADO": "ASIGNADO", "COMPLETADO": "FINALIZADO"}
+                for record in records:record["status"] = legacy.get(record.get("status"), record.get("status"))
             for record in records:
                 for column in BOOLEAN_COLUMNS.get(table, set()):
                     record[column] = bool(record[column])

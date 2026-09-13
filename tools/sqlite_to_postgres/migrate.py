@@ -6,7 +6,8 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-from app.postgres_server import SCHEMA
+from app.postgres_server import SCHEMA, TRANSFER_EVENTS_SCHEMA
+from app.wfm import SCHEMA as WFM_SCHEMA
 from tools.sqlite_to_postgres.migration_core import TABLES, counts, load_sqlite
 
 
@@ -25,6 +26,8 @@ def migrate(source_path, database_url):
     dataset = load_sqlite(source_path)
     with psycopg.connect(database_url) as database:
         database.execute(SCHEMA)
+        database.execute(TRANSFER_EVENTS_SCHEMA)
+        database.execute(WFM_SCHEMA)
         target_must_be_empty(database)
         for table in TABLES:
             columns = dataset[table]["columns"]

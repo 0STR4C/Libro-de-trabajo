@@ -17,9 +17,8 @@ from app import local_server
 class QuoteApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.test_db = Path(__file__).with_name("quote_test.db")
-        if cls.test_db.exists():
-            cls.test_db.unlink()
+        cls.test_directory = TemporaryDirectory(prefix="libro-trabajo-quotes-")
+        cls.test_db = Path(cls.test_directory.name) / "quote_test.db"
         local_server.DB_PATH = cls.test_db
         local_server.SESSIONS.clear()
         local_server.initialize()
@@ -38,8 +37,7 @@ class QuoteApiTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
-        if cls.test_db.exists():
-            cls.test_db.unlink()
+        cls.test_directory.cleanup()
 
     @classmethod
     def request(cls, path, method="GET", body=None, authenticated=False):
@@ -91,6 +89,30 @@ class QuoteApiTests(unittest.TestCase):
         self.assertEqual(result["extra_km"], 2)
         self.assertEqual(result["total_price"], 2380)
         self.assertEqual(result["task_number"], "987654")
+        self.assertEqual(result["pricing_snapshot"]["coverage"], "insured")
+        self.assertEqual(result["pricing_snapshot"]["extra_rate"], 120)
+
+    def test_manual_distance_has_the_same_upper_bound_as_postgres(self):
+        status, error = self.request_error(
+            "/api/quotes/calculate",
+            "POST",
+            {"manual_distance": True, "manual_trip_km": 1_000_001},
+            authenticated=True,
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("1.000.000", error["detail"])
+
+    def test_quote_rounding_uses_half_up_and_exact_extra_boundary(self):
+        self.assertEqual(local_server.round_currency("1.005"), 1.01)
+        self.assertEqual(local_server.round_distance("12.345"), 12.35)
+        self.assertEqual(local_server.calculate_extra_km("25.00", "25.00"), 0)
+        self.assertEqual(local_server.calculate_extra_km("25.01", "25.00"), 1)
+
+    def test_quote_rule_values_reject_non_finite_and_out_of_range_values(self):
+        with self.assertRaises(ValueError):
+            local_server.validate_quote_rule_values(["insured_base"], [float("nan")])
+        with self.assertRaises(ValueError):
+            local_server.validate_quote_rule_values(["included_km"], [1_000_001])
 
     def test_manual_quote_does_not_require_locations(self):
         result = self.request(
@@ -203,6 +225,54 @@ class QuoteApiTests(unittest.TestCase):
         self.assertEqual(result["extra_km"], 7)
         self.assertEqual(result["total_price"], 2980)
 
+    def test_automatic_route_counts_the_same_toll_on_both_segments(self):
+        with local_server.connect() as database:
+            database.execute(
+                "INSERT INTO toll_catalog(name,latitude,longitude,price,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("Peaje doble sintético", -34.0, -56.0, 500, 1, local_server.now(), local_server.now()),
+            )
+        routes = [
+            {"km": 10, "coordinates": [[-56.01, -34.0], [-55.99, -34.0]]},
+            {"km": 27, "coordinates": [[-56.02, -34.0], [-55.98, -34.0]]},
+        ]
+        with patch.object(local_server, "route_data", side_effect=routes):
+            result = self.request(
+                "/api/quotes/calculate",
+                "POST",
+                {
+                    "origin": "-34.0000, -56.0000",
+                    "destination": "-34.0100, -56.0100",
+                    "mobile_origin": "-34.0200, -56.0200",
+                    "include_mobile": True,
+                    "uninsured": False,
+                },
+                authenticated=True,
+            )
+        self.assertEqual(result["mode"], "automatic")
+        self.assertEqual(result["toll_count"], 2)
+        self.assertEqual(result["toll_price"], 1000)
+        self.assertEqual([item["segment"] for item in result["toll_details"]], [
+            "Salida de la grúa → origen del cliente",
+            "Traslado: origen → destino",
+        ])
+
+    def test_automatic_route_failure_is_a_recoverable_manual_contingency(self):
+        before = len(self.request("/api/quotes", authenticated=True))
+        with patch.object(local_server, "route_data", side_effect=ValueError("No se pudo calcular la ruta automáticamente. Use la distancia manual.")):
+            status, error = self.request_error(
+                "/api/quotes/calculate",
+                "POST",
+                {
+                    "origin": "-34.0000, -56.0000",
+                    "destination": "-34.0100, -56.0100",
+                    "uninsured": False,
+                },
+                authenticated=True,
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("distancia manual", error["detail"])
+        self.assertEqual(len(self.request("/api/quotes", authenticated=True)), before)
+
     def test_manual_tolls_use_configured_unit_price(self):
         result = self.request(
             "/api/quotes/calculate",
@@ -256,6 +326,15 @@ class QuoteApiTests(unittest.TestCase):
         history = self.request("/api/quotes", authenticated=True)
         self.assertGreaterEqual(len(history), 2)
         self.assertEqual(history[0]["created_by"], "Administrador")
+        self.assertIn("pricing_snapshot", history[0])
+
+    def test_quote_history_supports_pagination_and_filters(self):
+        page = self.request("/api/quotes/history?limit=1&offset=0&mode=manual", authenticated=True)
+        self.assertEqual(page["limit"], 1)
+        self.assertEqual(page["offset"], 0)
+        self.assertGreaterEqual(page["total"], 1)
+        self.assertEqual(len(page["items"]), 1)
+        self.assertEqual(page["items"][0]["origin_input"], "Cotización manual")
 
     def test_user_coordinate_formats_are_supported(self):
         full_link = "https://www.google.com/maps/place/34%C2%B051'50.7%22S+55%C2%B007'31.0%22W/@-34.8640815,-55.1278455,17z/data=!3m1!4b1!4m4!3m3!8m2!3d-34.8640859!4d-55.1252706"
@@ -407,6 +486,148 @@ class QuoteApiTests(unittest.TestCase):
                 (role_id,),
             ).fetchone()
         self.assertIsNotNone(restored)
+
+
+    def test_delay_takes_precedence_and_normalization_keeps_evidence(self):
+        standard = self.request(
+            "/api/settings/standards",
+            "POST",
+            {
+                "department": "SALTO",
+                "zone": "Zona fase uno",
+                "service": "ML",
+                "minutes_min": 30,
+                "minutes_max": 45,
+                "status": "CONFIRMADO",
+                "source": "Acuerdo de prueba",
+                "effective_from": "2026-09-11",
+                "review_due_at": "2026-12-11",
+            },
+            authenticated=True,
+        )
+        self.assertEqual(standard["status"], "CONFIRMADO")
+        delay = self.request(
+            "/api/delays",
+            "POST",
+            {
+                "service": "ML",
+                "department": "SALTO",
+                "zone": "Zona fase uno",
+                "message": "Margen de",
+                "minutes": 90,
+                "status": "VIGENTE",
+            },
+            authenticated=True,
+        )
+        status, detail = self.request_error(
+            "/api/delays",
+            "POST",
+            {
+                "service": "ML", "department": "SALTO", "zone": "Zona fase uno",
+                "message": "A confirmar", "status": "VIGENTE",
+            },
+            authenticated=True,
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("demora vigente", detail["detail"])
+        guidance = self.request("/api/arrival-guidance?department=SALTO&service=ML&zone=Zona%20fase%20uno")
+        self.assertEqual(guidance["precedence"], "ACTIVE_DELAY")
+        self.assertEqual(guidance["active_delays"][0]["id"], delay["id"])
+        closed = self.request(
+            f"/api/delays/{delay['id']}/normalize",
+            "PATCH",
+            {"status": "NORMALIZADO", "resolution_note": "Prestador confirmó disponibilidad"},
+            authenticated=True,
+        )
+        self.assertEqual(closed["normalized_by"], "Administrador")
+        self.assertEqual(closed["resolution_note"], "Prestador confirmó disponibilidad")
+        guidance = self.request("/api/arrival-guidance?department=SALTO&service=ML&zone=Zona%20fase%20uno")
+        self.assertEqual(guidance["precedence"], "STANDARD")
+        self.assertEqual(guidance["standards"][0]["id"], standard["id"])
+
+    def test_expired_delay_requires_review_before_it_is_communicated(self):
+        delay=self.request(
+            "/api/delays","POST",
+            {"service":"GRÚA","department":"ROCHA","zone":"Zona revisión","message":"A confirmar","status":"VIGENTE","review_minutes":15},
+            authenticated=True,
+        )
+        with local_server.connect() as database:
+            database.execute("UPDATE delay_zones SET expires_at=? WHERE id=?",("2020-01-01T00:00:00+00:00",delay["id"]))
+        guidance=self.request("/api/arrival-guidance?department=ROCHA&service=GR%C3%9AA&zone=Zona%20revisi%C3%B3n")
+        self.assertEqual(guidance["precedence"],"REVIEW_REQUIRED")
+        self.assertFalse(guidance["active_delays"])
+        verified=self.request(
+            f"/api/delays/{delay['id']}/verify","PATCH",
+            {"review_minutes":60,"verification_note":"Prestador ratificó la demora"},
+            authenticated=True,
+        )
+        self.assertTrue(verified["is_current"])
+        guidance=self.request("/api/arrival-guidance?department=ROCHA&service=GR%C3%9AA&zone=Zona%20revisi%C3%B3n")
+        self.assertEqual(guidance["precedence"],"ACTIVE_DELAY")
+
+    def test_zone_catalog_coverage_and_delay_metrics_are_exposed(self):
+        standard=self.request(
+            "/api/settings/standards","POST",
+            {"department":"ARTIGAS","zone":"Centro, Barrio Norte","service":"SINIESTROS",
+             "status":"PROVISIONAL","owner":"Mesa Interior","review_interval_days":45,
+             "effective_from":"2026-09-11","source":"Prueba de catálogo"},
+            authenticated=True,
+        )
+        self.assertEqual(standard["owner"],"Mesa Interior")
+        self.assertEqual(standard["review_interval_days"],45)
+        zones=self.request("/api/zones?department=ARTIGAS")
+        self.assertTrue({"Centro","Barrio Norte"}.issubset({item["name"] for item in zones}))
+        coverage=self.request("/api/settings/standards-coverage")
+        siniestros=next(item for item in coverage if item["department"]=="ARTIGAS" and item["service"]=="SINIESTROS")
+        self.assertEqual(siniestros["references"],1)
+        self.assertEqual(siniestros["coverage"],"PENDING")
+        metrics=self.request("/api/delay-metrics")
+        self.assertIn("verification_events",metrics)
+        self.assertIn("average_resolution_minutes",metrics)
+
+    def test_standard_proposal_approval_versions_and_zone_coverage(self):
+        zone=self.request(
+            "/api/settings/zones","POST",
+            {"department":"FLORIDA","name":"Zona flujo aprobación","owner":"Supervisión Interior","expected_services":["ML","GRÚA"]},
+            authenticated=True,
+        )
+        self.assertEqual(zone["expected_services"],["GRÚA","ML"])
+        proposal=self.request(
+            "/api/standards/proposals","POST",
+            {"department":"FLORIDA","zone":"Zona flujo aprobación","service":"ML","minutes_max":55,
+             "status":"CONFIRMADO","source":"Medición controlada","owner":"Supervisión Interior",
+             "review_interval_days":60,"effective_from":"2026-09-11"},
+            authenticated=True,
+        )
+        self.assertEqual(proposal["approval_status"],"PENDING")
+        self.assertFalse(proposal["is_usable"])
+        alerts=self.request("/api/operational-alerts")
+        self.assertTrue(any(item["kind"]=="STANDARD_APPROVAL" and item["entity_id"]==proposal["id"] for item in alerts))
+        guidance=self.request("/api/arrival-guidance?department=FLORIDA&service=ML&zone=Zona%20flujo%20aprobaci%C3%B3n")
+        self.assertEqual(guidance["precedence"],"NO_CONFIRMED_REFERENCE")
+        approved=self.request(
+            f"/api/settings/standards/{proposal['id']}/decision","PATCH",
+            {"decision":"APPROVED","note":"Fuente y alcance validados"},authenticated=True,
+        )
+        self.assertEqual(approved["approval_status"],"APPROVED")
+        self.assertTrue(approved["is_usable"])
+        versions=self.request(f"/api/settings/standards/{proposal['id']}/versions")
+        self.assertEqual([item["action"] for item in versions[:2]],["APPROVED","SUBMITTED"])
+        coverage=self.request("/api/zones-coverage?department=FLORIDA")
+        ml=next(item for item in coverage if item["zone_id"]==zone["id"] and item["service"]=="ML")
+        grua=next(item for item in coverage if item["zone_id"]==zone["id"] and item["service"]=="GRÚA")
+        self.assertEqual(ml["coverage"],"CURRENT")
+        self.assertEqual(grua["coverage"],"PENDING")
+
+    def test_delay_event_history_is_queryable(self):
+        delay=self.request(
+            "/api/delays","POST",
+            {"service":"SINIESTROS","department":"DURAZNO","zone":"Zona historial eventos","message":"A confirmar","status":"VIGENTE","review_minutes":60},
+            authenticated=True,
+        )
+        self.request(f"/api/delays/{delay['id']}/verify","PATCH",{"review_minutes":90,"verification_note":"Confirmación de prueba"},authenticated=True)
+        events=self.request(f"/api/delays/{delay['id']}/events")
+        self.assertEqual([item["event_type"] for item in events[:2]],["VERIFICADO","CREADO"])
 
 
 if __name__ == "__main__":

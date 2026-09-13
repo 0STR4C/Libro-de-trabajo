@@ -16,6 +16,7 @@ services:
 
   app:
     build: .
+    image: ${APP_IMAGE:-librodetrabajo-app:latest}
     restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -24,21 +25,19 @@ services:
       APP_SECRET: ${APP_SECRET:-desarrollo-no-usar-en-produccion}
       SESSION_SECONDS: ${SESSION_SECONDS:-43200}
       SESSION_IDLE_SECONDS: ${SESSION_IDLE_SECONDS:-1800}
-      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-127.0.0.1,::1}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
-      HTTPS_CONFIRMED: ${HTTPS_CONFIRMED:-false}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:8000:8000"
     depends_on:
       db:
         condition: service_healthy
       backup:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
@@ -52,11 +51,19 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-operativa}
       POSTGRES_USER: ${POSTGRES_USER:-operativa}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-operativa}
-      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-3600}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-900}
+      BACKUP_MAX_AGE_SECONDS: ${BACKUP_MAX_AGE_SECONDS:-5400}
     command: ["sh", "/opt/centro-operativo/backup.sh"]
     volumes:
       - ./tools/postgres_backup/backup.sh:/opt/centro-operativo/backup.sh:ro
+      - ./tools/postgres_backup/backup_health.sh:/opt/centro-operativo/backup_health.sh:ro
       - ./postgres-backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "sh /opt/centro-operativo/backup_health.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     depends_on:
       db:
         condition: service_healthy

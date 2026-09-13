@@ -22,6 +22,9 @@ class QuoteLayoutRegressionTests(unittest.TestCase):
         self.assertIn("bindQuoteMapResize", self.javascript)
         self.assertNotIn("toggleQuoteMapSize", self.javascript)
 
+    def test_regional_delay_score_starts_neighbor_sum_at_zero(self):
+        self.assertIn("reduce((sum,n)=>sum+(counts[n]||0)*.7,0)", self.javascript)
+
     def test_quote_columns_wrap_instead_of_being_crushed(self):
         self.assertIn(".quote-layout{display:flex;flex-wrap:wrap", self.styles)
 
@@ -30,9 +33,16 @@ class QuoteLayoutRegressionTests(unittest.TestCase):
         self.assertIn("input.disabled=!checked", self.javascript)
         self.assertIn("body.manual_mobile_km=0", self.javascript)
 
+    def test_editing_quote_inputs_invalidates_old_result(self):
+        self.assertIn("state.quoteResult=null;saveQuoteDraft()", self.javascript)
+
     def test_structured_api_errors_are_rendered_as_text(self):
         self.assertIn("function readableError", self.javascript)
         self.assertIn("readableError(payload?.detail,generic)", self.javascript)
+
+    def test_route_failure_offers_manual_distance_contingency(self):
+        self.assertIn("state.quoteFallbackAvailable=!body.manual_distance", self.javascript)
+        self.assertIn("Pasar a distancia manual", self.javascript)
 
     def test_breakdown_closes_with_the_final_total(self):
         self.assertIn('class="quote-line quote-grand-total"><span>Total</span>', self.javascript)
@@ -49,6 +59,17 @@ class QuoteLayoutRegressionTests(unittest.TestCase):
         self.assertIn('name="manual_toll_count" type="number" min="1" max="100" step="1"', self.javascript)
         self.assertIn("function toggleQuoteTolls", self.javascript)
         self.assertIn("input.required=checked;input.disabled=!checked", self.javascript)
+
+    def test_tariff_editor_and_currency_display_support_cents(self):
+        self.assertIn("minimumFractionDigits:2", self.javascript)
+        self.assertIn('type="number" min="0" step="0.01" inputmode="decimal"', self.javascript)
+
+    def test_quote_history_has_pagination_and_filters(self):
+        self.assertIn("/api/quotes/history?", self.javascript)
+        self.assertIn("function setQuoteHistoryPage", self.javascript)
+        self.assertIn("quoteHistoryCoverage", self.javascript)
+        self.assertIn("quoteHistoryFilterParams", self.javascript)
+        self.assertIn("Descargar esta vista", self.javascript)
 
     def test_quote_menu_icon_is_a_linear_clipboard_dollar_and_pen(self):
         quote_button = self.index.split('<button data-page="quotes">', 1)[1].split('</button>', 1)[0]

@@ -13,8 +13,18 @@ while true; do
   final="/backups/centro_operativo_${stamp}.dump"
   partial="${final}.partial"
   trap 'rm -f "$partial"' EXIT INT TERM
-  PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --file="$partial"
-  pg_restore --list "$partial" >/dev/null
+  if ! PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h db -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --file="$partial"; then
+    echo "No se pudo generar el respaldo; se reintentará en 30 segundos" >&2
+    rm -f "$partial"
+    sleep 30
+    continue
+  fi
+  if ! pg_restore --list "$partial" >/dev/null; then
+    echo "El respaldo generado no pasó la validación; se reintentará en 30 segundos" >&2
+    rm -f "$partial"
+    sleep 30
+    continue
+  fi
   mv "$partial" "$final"
   sha256sum "$final" > "${final}.sha256"
   trap - EXIT INT TERM
