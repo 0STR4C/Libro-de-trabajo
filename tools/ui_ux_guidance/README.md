@@ -22,17 +22,18 @@ las instrucciones requieren leerla explícitamente.
 4. Resultados locales de búsqueda, verificados como recomendaciones aplicables.
 
 Leer [ARCHITECTURE.md](../../ARCHITECTURE.md),
-[DEVELOPMENT.md](../../DEVELOPMENT.md) y [UI_UX_PLAN.md](../../UI_UX_PLAN.md).
+[ARCHITECTURE.md](../../ARCHITECTURE.md).
 Para web, la referencia transversal es
 [`quick-reference.md`](../../.claude/skills/ui-ux-pro-max/references/quick-reference.md).
 `references/pro-rules.md` declara un alcance nativo/móvil; adaptar únicamente sus
 reglas pertinentes, sin imponer requisitos de iOS o Android a esta aplicación web.
 
-El frontend es HTML, CSS y JavaScript en `app/static/`. No hay un stack UUPM
-específico de JavaScript puro entre los enumerados por la skill. Consultar los
-dominios apropiados sin asumir React, Next.js ni Tailwind. Mantener los iconos y
-estilos existentes cuando cubran la necesidad; no incorporar paquetes porque
-aparezcan en una recomendación.
+El desarrollo frontend usa JSX en `frontend/`, React, PrimeReact y Tailwind.
+Es obligatorio el contrato B2B de `AGENTS.md`/`CLAUDE.md`: alta densidad para
+Telefonistas, grillas precisas para Planificadores, tablas pequeñas y alternadas,
+textos largos con salto de línea, y Dropdown/Calendar `appendTo={document.body}`.
+No usar parches de CSS global ni lógica legacy para resolver componentes.
+Las recomendaciones de la skill se adaptan a estas directivas explícitas.
 
 ## Requisitos e instalación
 
@@ -41,9 +42,8 @@ aparezcan en una recomendación.
 - Su buscador declara Python 3.x y usa la biblioteca estándar; no requiere
   instalar paquetes Python externos. No se crea otro archivo de dependencias
   porque este directorio contiene documentación y una plantilla de instrucciones.
-- Si hay Python disponible, usar su ejecutable. La skill indica como alternativas
-  `python3` y `py -3`; comprobar su disponibilidad antes de utilizarlos.
-- Como alternativa, puede usarse Python de la imagen local
+- El único runtime permitido es Docker: no probar intérpretes en el host.
+  Para consultas del catálogo puede usarse Python de la imagen local
   `librodetrabajo-app:latest`, con Docker disponible, sin descargar imágenes ni
   conectar bases de datos.
 - Si falta el intérprete y Docker no está disponible, leer las referencias y
@@ -52,13 +52,7 @@ aparezcan en una recomendación.
 
 ## Consulta mínima y ejemplo verificable
 
-Con Python disponible, este comando solo consulta el catálogo local:
-
-```powershell
-python -B "D:\Codex\Libro de trabajo\.claude\skills\ui-ux-pro-max\scripts\search.py" "keyboard focus modal" --domain ux -n 2
-```
-
-Alternativa con la imagen Docker ya instalada:
+Consulta del catálogo con la imagen Docker ya instalada (no es una prueba del proyecto):
 
 ```powershell
 docker run --rm --pull=never --network none --read-only --cap-drop ALL --security-opt no-new-privileges --mount "type=bind,source=D:\Codex\Libro de trabajo\.claude\skills\ui-ux-pro-max,target=/uupm,readonly" --entrypoint python librodetrabajo-app:latest -B /uupm/scripts/search.py "keyboard focus modal" --domain ux -n 2

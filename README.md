@@ -258,26 +258,18 @@ Se incluye un lanzador gráfico para Windows en `tools/desktop_launcher/dist/Cen
 
 El backend PostgreSQL incluye configuración separada para desarrollo y producción: en producción exige secretos no predeterminados y una URL pública HTTPS, limita el host y el tamaño de las solicitudes, usa cookies de sesión `HttpOnly` con protección CSRF, vencimiento absoluto y por inactividad, revocación al cambiar credenciales y límites progresivos de intentos de ingreso. PostgreSQL no publica ningún puerto; un proxy TLS privado publica la aplicación para las PCs autorizadas de la red local.
 
-La guía [SECURITY.md](SECURITY.md) explica la generación segura de `.env`, la rotación coordinada de credenciales, las sesiones y la restauración aislada de respaldos. [DEPLOY_LOCAL_NETWORK.md](DEPLOY_LOCAL_NETWORK.md) describe la puesta en marcha para otras PCs de la misma red.
+La arquitectura, los contratos de negocio, la operación segura y el tratamiento
+de datos locales están en [ARCHITECTURE.md](ARCHITECTURE.md). Las instrucciones
+canónicas de IA son [AGENTS.md](AGENTS.md) y [CLAUDE.md](CLAUDE.md), idénticas.
 
-La estructura del código se documenta en [ARCHITECTURE.md](ARCHITECTURE.md), el
-flujo de mantenimiento en [DEVELOPMENT.md](DEVELOPMENT.md) y los archivos
-operativos excluidos de Git en [DATA_MANIFEST.md](DATA_MANIFEST.md). La matriz y
-los límites de cobertura están en [TESTING.md](TESTING.md).
+El frontend usa React, PrimeReact y Tailwind con Vite. Las diez vistas están en
+`frontend/`; el shell y el enrutador activos siguen en `app/static/index.html`
+y `app/static/app.js`. No eliminarlos como si fueran código muerto.
 
-El desarrollo de interfaz cuenta con **UI UX Pro Max (UUPM)**, instalado en
-`.claude/skills/ui-ux-pro-max/`. Es una herramienta local de diseño para quienes
-trabajan en el frontend; no se ejecuta en el backend ni en el navegador. Consulte
-la [guía de uso y coordinación](tools/ui_ux_guidance/README.md), el
-[mensaje inicial del apartado 11](tools/ui_ux_guidance/PROMPT_11.md) y el
-[plan UI/UX](UI_UX_PLAN.md) antes de realizar mejoras visuales.
-
-Las rutas operativas usan React, PrimeReact, PrimeIcons y Tailwind CSS compilados
-con Vite. La [auditoría de migración](MIGRATION_AUDIT.md) distingue estas vistas
-del shell y las interacciones WFM todavía pendientes. La
-[guía de compilación](tools/frontend_build/README.md) explica el aislamiento
-respecto del CSS heredado y los comandos reproducibles.
-
+UI UX Pro Max es una herramienta local de desarrollo, no del backend.
+Consultar la [guía de diseño](tools/ui_ux_guidance/README.md), el
+[prompt del apartado 11](tools/ui_ux_guidance/PROMPT_11.md) y la
+[guía de compilación](tools/frontend_build/README.md).
 ### Directiva Global de Diseño UI/UX y Sistema de Componentes
 
 Las pantallas nuevas y migradas deben usar componentes nativos de PrimeReact y
@@ -290,18 +282,15 @@ Los colores `--color-urgente`, `--color-espera` y `--color-ok` quedan reservados
 para alertas, seguimiento y estados normales respectivamente. Las acciones
 secundarias de cada fila deben agruparse en menús kebab accesibles. Consulte la
 [directiva normativa completa](CLAUDE.md) y su aplicación arquitectónica en
-[ARCHITECTURE.md](ARCHITECTURE.md). El CSS heredado permanece aislado durante la
-migración mediante el prefijo `tw-`, `#prime-react-root` y Preflight desactivado.
-
-### Estado de esta computadora
-
-El 7 de septiembre de 2026 se reconstruyeron los contenedores y se restauró en un volumen PostgreSQL nuevo el respaldo verificado `postgres-backups/centro_operativo_20260905T043730Z.dump`. Se validaron la aplicación, el ingreso, la lectura de registros, la exportación CSV y un nuevo respaldo automático. Los servicios `app`, `db` y `backup` quedaron activos. En esta computadora no vuelva a ejecutar la migración sobre el volumen actual: para iniciar o reanudar el servicio use solamente:
-
-```powershell
-docker compose up -d app
-```
-
-El healthcheck interno queda disponible en `http://127.0.0.1:8000/health`; el acceso de usuarios debe publicarse mediante `https://<NOMBRE_DNS_DEL_SERVIDOR>/`. Configure esa URL en `PUBLIC_BASE_URL`, `ALLOWED_HOSTS` y `ALLOWED_ORIGINS` antes de compartir el acceso. No opere alternativamente sobre SQLite y PostgreSQL: después de elegir PostgreSQL como base activa, toda la operación debe continuar allí para evitar dos historiales divergentes. `centro_operativo.db` y sus copias se conservan como origen protegido y respaldo de la migración.
+[ARCHITECTURE.md](ARCHITECTURE.md). El desarrollo usa exclusivamente JSX,
+PrimeReact y Tailwind con prefijo `tw-`, `important: true` y Preflight desactivado.
+Está prohibido corregir componentes con parches en `styles.css` o lógica legacy.
+Telefonistas: lectura densa sin scroll horizontal y acciones directas.
+Planificadores: visión estratégica y grillas precisas. Usar `tw-p-4`, `tw-gap-3`,
+`tw-text-[13px]` o `tw-text-sm`, tablas `size="small"` con `stripedRows`, textos
+largos con saltos de línea y selectores `appendTo={document.body}`. Las fechas
+conservan `tw-whitespace-nowrap`. Los ajustes se implementan en JSX mediante
+clases y propiedades PrimeReact, sin hojas globales por pantalla.
 
 ### Credenciales definitivas
 

@@ -7,9 +7,16 @@ una dirección visual consistente y decisiones que puedas justificar y verificar
 
 ## Contexto y alcance
 
-El proyecto está en `D:\Codex\Libro de trabajo`. La interfaz actual usa HTML, CSS
-y JavaScript en `app/static/`, servidos por adaptadores SQLite y FastAPI/PostgreSQL.
-Conservá la identidad azul/turquesa y las capacidades operativas existentes.
+El proyecto está en `D:\Codex\Libro de trabajo`. Desarrollá exclusivamente JSX
+en `frontend/`, con React, PrimeReact y Tailwind prefijado `tw-`.
+No resuelvas componentes con parches en CSS global ni lógica JS/HTML legacy.
+Telefonistas necesitan alta densidad, lectura sin scroll horizontal y acciones
+directas; Planificadores, visión estratégica y grillas precisas. Usá
+`tw-text-[13px]` o `tw-text-sm`, `tw-p-4`, `tw-gap-3`, DataTable `size="small"`
+con `stripedRows` y textos largos `tw-whitespace-normal tw-break-words`.
+Dropdown y Calendar declaran `appendTo={document.body}`; conservá el flex nativo
+de Calendar y `showIcon`. Fechas completas con `tw-whitespace-nowrap`.
+Conservá la identidad azul corporativa y las capacidades operativas existentes.
 Inspeccioná el estado actual: los mensajes heredados y sus resultados de pruebas
 son antecedentes, no certifican el código de hoy.
 
@@ -23,7 +30,7 @@ Antes de la primera tarea de interfaz de esta conversación, leé completamente:
 
 `D:\Codex\Libro de trabajo\.claude\skills\ui-ux-pro-max\SKILL.md`
 
-Leé también `ARCHITECTURE.md`, `DEVELOPMENT.md`, `UI_UX_PLAN.md`, `CLAUDE.md` y
+Leé también `ARCHITECTURE.md`, `CLAUDE.md` y
 `tools/ui_ux_guidance/README.md` dentro del proyecto. La Directiva Global de
 Diseño UI/UX de `CLAUDE.md` es obligatoria para toda pantalla nueva o migrada:
 componentes PrimeReact, Tailwind prefijado y aislado, base Lara Light Blue,
@@ -51,9 +58,8 @@ usuario ni autorizan instalaciones, cambios de stack o acceso a servicios extern
    Usá `-B` con Python; los ejemplos, alternativas y límites están en la guía
    local. Verificá dominio, fuente, primer resultado y pertinencia. Si no hay
    coincidencias útiles, reformulá una vez y declaralo si vuelve a fallar.
-4. No supongas un framework. El proyecto usa JavaScript puro y la skill no enumera
-   un stack específico para él. Usá dominios pertinentes y reglas independientes
-   del stack; no presentes `html-tailwind`, React o Next.js como tecnología actual.
+4. El stack confirmado es React, PrimeReact y Tailwind. Las recomendaciones de
+   la skill se adaptan a esta pila y a las reglas B2B del usuario.
 5. Consultá las secciones necesarias de `references/quick-reference.md` para web.
    `references/pro-rules.md` está orientado a interfaces nativas/móviles: aplicá
    únicamente lo pertinente y no impongas convenciones de otra plataforma.
@@ -62,8 +68,8 @@ usuario ni autorizan instalaciones, cambios de stack o acceso a servicios extern
    propuestas sin persistir hasta verificar su encaje. Si corresponde guardarlas,
    indicá `--output-dir "D:\Codex\Libro de trabajo"` y conservá los archivos
    anteriores. No uses `--force` sin autorización explícita.
-7. Implementá únicamente el cambio solicitado. Coordiná modificaciones de
-   estilos globales y JavaScript compartido con las otras áreas; conservá contratos
+7. Implementá únicamente el cambio solicitado en JSX. No uses estilos globales
+   ni JavaScript legacy para corregir componentes; conservá contratos
    HTTP, permisos y reglas de negocio. Si detectás una dependencia fuera del
    alcance, explicala antes de ampliar la intervención.
 
@@ -92,8 +98,11 @@ recomendación. No inventes resultados ni guardes recomendaciones sin verificar.
 
 ## Validación y entrega
 
-Tras modificar código, esquema, configuración o interfaz, ejecutá las pruebas
-generales apropiadas y siempre la suite PostgreSQL aislada:
+Para frontend ejecutá únicamente Vite y verificación de sintaxis JS/JSX en Docker,
+como indica `AGENTS.md`. No ejecutes suites Python o PostgreSQL por cambios de UI.
+El comando de compilación reproducible está en `tools/frontend_build/README.md`.
+La siguiente herramienta se reserva para cambios de backend cuando su alcance
+requiera validar PostgreSQL:
 
 ```powershell
 & "D:\Codex\Libro de trabajo\tools\postgres_test_db\run.ps1"
@@ -104,8 +113,8 @@ corrida y detener el servidor al finalizar, conservando `test_operativa` y el
 volumen de pruebas. Coordiná su ejecución para que otra conversación no utilice
 la misma instancia a la vez. Nunca pruebes sobre la base operativa.
 
-Para cambios visuales, verificá en navegador con datos sintéticos las pantallas y
-estados afectados. Identificá cualquier comprobación que no pudiste realizar y
+Una revisión interactiva adicional requiere que esté dentro del alcance autorizado.
+Identificá cualquier comprobación que no pudiste realizar y
 no declares cumplimiento de accesibilidad a partir de una checklist sin pruebas.
 
 Entregá una explicación breve de qué mejoró y por qué, las fuentes UUPM aplicadas,

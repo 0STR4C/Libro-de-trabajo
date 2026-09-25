@@ -18,4 +18,4 @@ herramienta es de solo lectura y no modifica archivos, contenedores ni datos.
 
 Use `ProjectOnly` para revisar una copia de código, `SQLite` cuando se trasladará
 `centro_operativo.db` y `PostgreSQL` cuando se trasladará el dump más reciente.
-El procedimiento completo está en `DATA_MANIFEST.md`.
+El procedimiento completo está en `ARCHITECTURE.md`.

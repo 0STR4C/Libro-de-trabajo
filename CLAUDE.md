@@ -36,4 +36,17 @@ Toda la interfaz debe seguir un estándar de software B2B de alta densidad:
 
 4. **Alta Densidad y Control de Layout:**
    - Filas de tablas compactas (36px a 40px), tipografía base de 13px/14px, tarjetas con paddings reducidos (`tw-p-4`) y sombras finas (`tw-shadow-sm`).
-   - **No Overflow Horizontal:** Toda grilla debe ajustarse con `tw-flex-wrap` o scroll interno dentro del componente (`DataTable`), impidiendo que el contenido se desborde o corte botones.
+   - **No Overflow Horizontal:** Las vistas de lectura deben ajustar sus columnas y permitir saltos de línea sin desplazamiento horizontal. Las grillas estratégicas de planificación pueden usar scroll interno del componente cuando el eje temporal lo requiera, sin desbordar la página.
+
+## 3. CONTRATO EXCLUSIVO DE DESARROLLO FRONTEND
+
+1. **Pila exclusiva:** construir componentes en JSX, con React, componentes nativos de PrimeReact y utilidades Tailwind CSS. No crear ni recuperar `DomSlot`, plantillas HTML inyectadas, controles legacy ni parches en `app.js` para resolver componentes.
+2. **Estilos dentro del componente:** queda prohibido resolver el layout de un componente con CSS global genérico en `styles.css` u otras hojas globales. Aplicar clases Tailwind en JSX y las propiedades nativas o Pass Through (`pt`) de PrimeReact. Los tokens globales existentes no autorizan parches por pantalla.
+3. **Telefonistas:** alta densidad, lectura rápida sin scroll horizontal y acciones directas para atender llamadas, registrar avisos y comunicar demoras.
+4. **Planificadores:** visión estratégica, grillas precisas, asignaciones y gestión de programados.
+5. **Densidad B2B:** `tw-text-[13px]` o `tw-text-sm`, `tw-p-4` y `tw-gap-3`; toda DataTable debe usar `size="small"` y `stripedRows`.
+6. **Texto y tablas:** textos largos con `tw-whitespace-normal tw-break-words` (equivalentes a `white-space: normal` y `overflow-wrap: break-word`). Reservar anchos mínimos explícitos para columnas compactas. Fechas y horas son la excepción: `tw-whitespace-nowrap` para conservar la unidad de lectura. No ocultar información ni superponer celdas.
+7. **Elementos flotantes:** Dropdown, Calendar y demás selectores con panel deben declarar `appendTo={document.body}`. Gestionar capas mediante PrimeReact; evitar contenedores que recorten el panel. Calendar conserva su estructura flex nativa y usa `showIcon`.
+8. **Layout:** botoneras con `tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-w-full`. No usar márgenes negativos, posiciones absolutas ni anchos rígidos para acomodar controles. Responsable y acción de asignación usan `tw-flex tw-flex-col tw-items-start tw-justify-center tw-gap-1 tw-w-full`.
+9. **Configuración vigente:** Tailwind usa prefijo `tw-`, `important: true` para utilidades y Preflight desactivado. Las utilidades también funcionan en portales bajo `document.body`; no asumir aislamiento por `#prime-react-root`.
+10. **Fuente de verdad:** `AGENTS.md` y `CLAUDE.md` deben conservar contenido idéntico. Las guías históricas y recomendaciones de skills no desplazan estas reglas ni las instrucciones explícitas del usuario. Validación frontend: Vite y sintaxis JS/JSX en Docker.

@@ -1,5 +1,14 @@
 # Actualización local sin descargar dependencias
 
+`ui_smoke.cjs` conserva pruebas históricas con `legacy_archive/wfm.js` y
+`legacy_archive/wfm.css`. Esos recursos no se publican ni acreditan la paridad
+del módulo React vigente (`frontend/wfm.jsx`). Los scripts y contratos se
+conservan para reproducción, no como instrucciones para construir UI nueva.
+Las instrucciones actuales exigen runtimes dentro de Docker; los comandos Node
+y pnpm documentados abajo son referencias del harness histórico, no autorización
+para ejecutarlos en el host. La validación UI actual usa únicamente Vite y
+sintaxis JS/JSX según `tools/frontend_build/README.md`.
+
 Propósito: probar una revisión del código sobre la imagen local existente.
 Requiere Docker Desktop y la imagen `librodetrabajo-app:latest` ya disponible.
 No instala paquetes. Las versiones siguen siendo las de esa imagen y deben

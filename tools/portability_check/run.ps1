@@ -11,8 +11,8 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 
 $required = @(
-    'README.md', 'CHANGELOG.md', 'ARCHITECTURE.md', 'DEVELOPMENT.md',
-    'DATA_MANIFEST.md', 'SECURITY.md', 'compose.yaml', 'compose.production.yaml',
+    'README.md', 'CHANGELOG.md', 'ARCHITECTURE.md', 'AGENTS.md',
+    'CLAUDE.md', 'compose.yaml', 'compose.production.yaml',
     'Dockerfile', '.env.example', 'app\application.py', 'app\local_server.py',
     'app\postgres_server.py', 'tools\test_all\run.ps1',
     'tools\postgres_test_db\run.ps1'

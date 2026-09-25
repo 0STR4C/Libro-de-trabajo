@@ -1,83 +1,62 @@
 # Compilación frontend PrimeReact + Tailwind CSS
 
-## Propósito
+Vite compila JSX de `frontend/` y genera `app/static/frontend/`. Todo desarrollo
+usa React, componentes PrimeReact y utilidades Tailwind; no se admite fallback
+HTML ni parches de componentes en CSS global. Aplicar `AGENTS.md` y `CLAUDE.md`.
 
-Prepara la migración gradual de las pantallas de Libro de Trabajo a React y
-PrimeReact sin alterar la lógica heredada. Vite compila el punto de entrada de
-`frontend/` y deja los artefactos estáticos en `app/static/frontend/`.
+## Requisitos
 
-La migración progresiva carga esos artefactos en `#prime-react-root`. El Header
-monta el selector Claro/Oscuro/Sistema; Resumen usa tarjetas PrimeReact y Avisos
-incorpora tarjetas métricas más `DataTable`. Ambas vistas reciben datos o nodos
-ya generados por la aplicación heredada. De este modo se renueva la capa visual
-sin duplicar eventos, estado ni llamadas a la API. Si el módulo no puede
-cargarse, cada pantalla conserva la estructura heredada como respaldo.
+Docker Desktop y la imagen local `librodetrabajo-frontend-check`, con Node y las
+dependencias de `package-lock.json`. No ejecutar Node ni Python en el host.
+Si cambian dependencias, reconstruir la etapa frontend del Dockerfile con
+`npm ci`; las descargas requieren la autorización correspondiente.
 
-## Requisitos e instalación
+## Compilación sin reconstruir la imagen
 
-- Node.js 20.19 o 22.12 o posterior y npm.
-- Acceso al registro de npm solo durante la instalación.
-
-Desde la raíz del proyecto:
+Desde la raíz del proyecto en PowerShell:
 
 ```powershell
-npm ci
+docker run --rm --pull=never --network none --mount "type=bind,source=${PWD}/frontend,target=/build/frontend,readonly" --mount "type=bind,source=${PWD}/app/static,target=/build/app/static" --mount "type=bind,source=${PWD}/tailwind.config.js,target=/build/tailwind.config.js,readonly" --mount "type=bind,source=${PWD}/postcss.config.js,target=/build/postcss.config.js,readonly" --mount "type=bind,source=${PWD}/vite.config.js,target=/build/vite.config.js,readonly" librodetrabajo-frontend-check npm run build:frontend
 ```
 
-Las versiones exactas se conservan en `package.json` y `package-lock.json`.
-`node_modules/` permanece excluido de Git.
+Entradas: `frontend/`, los recursos de `app/static/` y las tres configuraciones
+montadas. Salidas reemplazables: `app/static/frontend/prime-react.js`,
+`prime-react.css` y fuentes bajo `app/static/frontend/assets/`. No modifica datos
+operativos ni archivos fuente. Las versiones están en `package-lock.json`.
 
-## Uso
+## Estilo y validación
+
+Tailwind mantiene prefijo `tw-`, `important: true` y Preflight desactivado; las
+utilidades alcanzan portales bajo `document.body`. PrimeReact usa Lara Light Blue.
+Telefonistas necesitan lectura densa sin scroll horizontal; Planificadores,
+grillas precisas. Usar `tw-text-[13px]` o `tw-text-sm`, `tw-p-4`, `tw-gap-3`,
+DataTable `size="small"` con `stripedRows`, textos largos con salto de línea,
+fechas sin cortes y Dropdown/Calendar `appendTo={document.body}`.
+
+La validación frontend se limita a Vite y sintaxis JS/JSX en Docker. No ejecutar
+suites Python ni PostgreSQL para UI. No reconstruir toda la imagen ante errores
+de JSX: corregir el componente y repetir la compilación.
+
+## Inventario conservado de CSS heredado
+
+`audit_css.cjs` compara selectores CSS con las fuentes JSX y el shell activo.
+Requiere la misma imagen Docker de compilación; usa PostCSS 8.5.28 y
+postcss-selector-parser 6.1.4 resuelto por `package-lock.json`. No necesita instalación
+adicional ni red. Es una heurística de candidatos, no prueba de ausencia en el DOM:
+revisar cada resultado, sobre todo clases generadas por datos o bibliotecas.
+
+Desde la raíz en PowerShell, inventario de solo lectura:
 
 ```powershell
-npm run build:frontend
+docker run --rm --pull=never --network none --mount "type=bind,source=${PWD},target=/project,readonly" librodetrabajo-frontend-check node /project/tools/frontend_build/audit_css.cjs /project
 ```
 
-Entradas:
+Entradas: `frontend/*.jsx`, `app/static/index.html`, `app.js`, `branding.js` y las
+hojas propias styles/operations/dashboard/quotes/settings/auth. Salida: JSON por
+stdout. `--apply` escribe exclusivamente esas hojas; para usarlo después de
+revisar candidatos, quitar `,readonly` del montaje y agregar `--apply` al final.
+No procesa vendor, el bundle generado, datos operativos ni `legacy_archive`.
 
-- `frontend/main.jsx`: integración de React, PrimeReact, tema e íconos;
-- `frontend/tailwind.css`: capas de Tailwind sin estilos base;
-- `tailwind.config.js`, `postcss.config.js` y `vite.config.js`;
-- clases encontradas en `frontend/` y `app/static/`.
-
-Salidas reemplazables:
-
-- `app/static/frontend/prime-react.js`;
-- `app/static/frontend/prime-react.css`;
-- fuentes de PrimeIcons bajo `app/static/frontend/assets/`.
-
-La compilación puede reemplazar únicamente `app/static/frontend/`. No modifica
-las bases de datos ni los archivos fuente. Los artefactos se generan también en
-la etapa Node del Dockerfile y se copian a la imagen Python final.
-
-Vite usa `/static/frontend/` como base pública para que las fuentes de
-PrimeIcons e Inter se resuelvan desde el mismo directorio estático.
-
-## Aislamiento del CSS heredado
-
-Tailwind usa el prefijo `tw-`, genera reglas bajo `#prime-react-root` y tiene
-`corePlugins.preflight` desactivado. El archivo de entrada omite además
-`@tailwind base`. No quitar esas protecciones hasta completar una revisión
-visual de las pantallas heredadas y migradas.
-
-El modo oscuro se activa con la clase `tw-dark`, conserva la preferencia en
-`localStorage` y, al elegir Sistema, sigue los cambios de
-`prefers-color-scheme`. Las variables globales de `styles.css` mantienen los
-colores semánticos de urgencia, espera y resolución en ambos temas.
-
-Los estilos de PrimeReact se aplican a sus clases `p-*`. El tema elegido para la
-base de migración es `lara-light-blue`, coherente con la identidad azul actual.
-
-## Docker y validación
-
-El Dockerfile instala dependencias mediante `npm ci`, ejecuta la compilación y
-copia solo la salida estática a la imagen de aplicación. Para validar una imagen
-candidata sin tocar el contenedor activo:
-
-```powershell
-docker build --tag librodetrabajo-app:frontend-candidate .
-& .\tools\test_all\run.ps1 -ImageName librodetrabajo-app:frontend-candidate
-```
-
-Después de validar una implementación de interfaz, la suite PostgreSQL aislada
-continúa siendo obligatoria. Nunca debe usarse la base operativa para pruebas.
+Ejemplo verificable: `.elemento-retirado{color:red}` es candidato si ninguna
+fuente menciona ese nombre; `.p-button` se conserva como clase de PrimeReact.
+Después de aplicar, ejecutar Vite; revisar siempre el diff y los cambios de UI.

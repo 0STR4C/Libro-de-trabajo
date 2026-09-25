@@ -15,6 +15,10 @@ postgres-backups/
 .dotnet-home/
 workbook-analysis/
 node_modules/
+**/node_modules/
+.claude/
+artifacts/
+legacy_archive/
 __pycache__/
 *.py[cod]
 .pytest_cache/

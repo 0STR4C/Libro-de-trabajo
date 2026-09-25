@@ -15,7 +15,7 @@ $noticeUiScript = Join-Path $root 'tools\wfm_offline_build\notice_smoke.cjs'
 $playwrightModule = Join-Path $root 'tools\wfm_offline_build\node_modules\playwright'
 $javascriptFiles = @(
     (Join-Path $root 'app\static\app.js'),
-    (Join-Path $root 'app\static\wfm.js'),
+    (Join-Path $root 'legacy_archive\wfm.js'),
     $uiScript,
     $dashboardUiScript,
     $noticeUiScript

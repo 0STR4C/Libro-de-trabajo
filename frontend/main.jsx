@@ -6,10 +6,9 @@ import { Button } from 'primereact/button';
 import { Card } from 'primereact/card';
 import { Calendar } from 'primereact/calendar';
 import { Column } from 'primereact/column';
-import { DataTable } from 'primereact/datatable';
+import { DataTable } from './dense-table.jsx';
 import { Dropdown } from 'primereact/dropdown';
 import { InputText } from 'primereact/inputtext';
-import { Menu } from 'primereact/menu';
 import { SelectButton } from 'primereact/selectbutton';
 import { Tag } from 'primereact/tag';
 
@@ -26,11 +25,35 @@ import { StandardsView } from './standards.jsx';
 import { SettingsView } from './settings.jsx';
 import { AuditView } from './audit.jsx';
 import { WfmView } from './wfm.jsx';
-import { LoginView } from './login.jsx';
+import { LoginView, LogoutDialog } from './login.jsx';
 export { DashboardView, QuoteView, TransfersView };
 export { DelaysView, NoticesView };
 
-const defaultPrimeReactOptions = { ripple: true, inputStyle: 'outlined' };
+const defaultPrimeReactOptions = {
+  ripple: true,
+  inputStyle: 'outlined',
+  appendTo: document.body,
+  autoZIndex: true,
+  pt: {
+    card: {
+      root: { className: 'tw-min-w-0 tw-max-w-full tw-rounded-md tw-border tw-border-[var(--border)] tw-bg-[var(--surface)] tw-text-[var(--text)] tw-shadow-sm' },
+      body: { className: 'tw-p-3' },
+      content: { className: 'tw-p-0' },
+      title: { className: 'tw-mb-2 tw-text-sm tw-font-semibold' }
+    },
+    inputtext: { root: { className: 'tw-min-w-0 tw-max-w-full tw-px-2 tw-py-1.5 tw-text-[13px]' } },
+    inputtextarea: { root: { className: 'tw-min-w-0 tw-max-w-full tw-p-2 tw-text-[13px]' } },
+    dropdown: {
+      root: { className: 'tw-min-w-0 tw-max-w-full tw-text-[13px]' },
+      input: { className: 'tw-px-2 tw-py-1.5 tw-text-[13px]' }
+    },
+    button: { root: { className: 'tw-min-h-9 tw-px-2 tw-py-1 tw-text-[13px]' } },
+    dialog: {
+      root: { className: 'tw-max-w-[calc(100vw-24px)] tw-text-[13px]' },
+      content: { className: 'tw-px-4 tw-py-3' }
+    }
+  }
+};
 let dashboardRoot = null;
 let noticesRoot = null;
 let quotesRoot = null;
@@ -42,6 +65,7 @@ let settingsRoot = null;
 let auditRoot = null;
 let wfmRoot = null;
 let loginRoot = null;
+let logoutRoot = null;
 
 export function mountDashboard(element, model) {
   if (!element) throw new TypeError('mountDashboard requiere el contenedor de Resumen');
@@ -130,6 +154,8 @@ export function mountWfm(element, model) { wfmRoot = mountWithPrimeReact(wfmRoot
 export function unmountWfm() { wfmRoot?.unmount(); wfmRoot = null; }
 export function mountLogin(element, model) { loginRoot = mountWithPrimeReact(loginRoot, element, <LoginView model={model} />); }
 export function unmountLogin() { loginRoot?.unmount(); loginRoot = null; }
+export function mountLogout(element, model) { logoutRoot = mountWithPrimeReact(logoutRoot, element, <LogoutDialog model={model} />); }
+export function unmountLogout() { logoutRoot?.unmount(); logoutRoot = null; }
 
 const mountContract = {
   mountDashboard,
@@ -153,7 +179,9 @@ const mountContract = {
   mountWfm,
   unmountWfm,
   mountLogin,
-  unmountLogin
+  unmountLogin,
+  mountLogout,
+  unmountLogout
 };
 window.LibroTrabajoUI = mountContract;
 window.ReactApp = mountContract;
