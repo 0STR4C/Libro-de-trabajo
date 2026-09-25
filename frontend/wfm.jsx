@@ -1,0 +1,156 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Button } from 'primereact/button';
+import { Calendar } from 'primereact/calendar';
+import { Card } from 'primereact/card';
+import { Checkbox } from 'primereact/checkbox';
+import { Column } from 'primereact/column';
+import { DataTable } from 'primereact/datatable';
+import { Dialog } from 'primereact/dialog';
+import { Dropdown } from 'primereact/dropdown';
+import { InputNumber } from 'primereact/inputnumber';
+import { InputText } from 'primereact/inputtext';
+import { InputTextarea } from 'primereact/inputtextarea';
+import { Tag } from 'primereact/tag';
+import { Toast } from 'primereact/toast';
+
+const teams = ['Telefonista', 'Planificador', 'Supervisor'];
+const weekdays = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+const iso = value => value ? `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` : '';
+const date = value => value ? new Date(`${value}T12:00:00`) : null;
+const clock = slot => slot == null ? '—' : `${String(Math.floor(Number(slot) / 2) % 24).padStart(2, '0')}:${Number(slot) % 2 ? '30' : '00'}${Number(slot) >= 48 ? ' +1' : ''}`;
+const operationalAt = (shift, slot) => {
+  const segments = shift.segments?.length ? shift.segments : [{ start: shift.start, end: shift.end }];
+  return segments.some(segment => segment.start <= slot && slot < segment.end)
+    && !(shift.break != null && (shift.break_duration ?? 1) > 0 && shift.break <= slot && slot < shift.break + (shift.break_duration ?? 1))
+    && !(shift.exceptions || []).some(exception => exception.start <= slot && slot < exception.end);
+};
+
+function WfmTimeline({ plan, onMove, onEdit, onMeeting }) {
+  const shifts = plan.shifts || [];
+  const segments = shifts.flatMap(shift => shift.segments?.length ? shift.segments : [{ start: shift.start, end: shift.end }]);
+  const first = Math.min(plan.window?.[0] ?? 0, ...segments.map(item => item.start));
+  const last = Math.max(plan.window?.[1] ?? 48, ...segments.map(item => item.end));
+  const span = Math.max(1, last - first);
+  const place = (start, end, top, color) => ({ position: 'absolute', left: `${(start - first) / span * 100}%`, width: `${Math.max(1, (end - start) / span * 100)}%`, top, height: 19, background: color, borderRadius: 4, color: 'white', overflow: 'hidden', whiteSpace: 'nowrap', fontSize: 11, cursor: 'grab' });
+  const begin = (event, kind, shift, index, start, end) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const offset = Math.max(0, Math.min(end - start - 1, Math.floor((event.clientX - rect.left) / Math.max(1, rect.width) * (end - start))));
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/json', JSON.stringify({ kind, userId: shift.user_id, index, offset }));
+  };
+  const drop = (event, shift) => {
+    event.preventDefault();
+    try {
+      const item = JSON.parse(event.dataTransfer.getData('application/json'));
+      if (Number(item.userId) !== Number(shift.user_id)) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const slot = first + Math.round((event.clientX - rect.left) / Math.max(1, rect.width) * span) - item.offset;
+      onMove(item.kind, shift.user_id, item.index, slot);
+    } catch { /* Ignorar datos de arrastre externos. */ }
+  };
+  return <DataTable value={shifts} dataKey="user_id" size="small" scrollable emptyMessage="No hay turnos en el borrador"><Column header="Agente" frozen body={shift => plan.people?.find(person => person.id === shift.user_id)?.display_name || shift.user_id} /><Column header={`Línea de tiempo · ${clock(first)} a ${clock(last)}`} style={{ minWidth: '750px' }} body={shift => <div className="tw-relative tw-min-h-[76px] tw-rounded-md tw-border tw-bg-slate-50 dark:tw-bg-slate-900" onDragOver={event => event.preventDefault()} onDrop={event => drop(event, shift)} onContextMenu={event => { event.preventDefault(); onEdit(shift); }} onDoubleClick={() => onEdit(shift)}>{(shift.segments?.length ? shift.segments : [{ start: shift.start, end: shift.end }]).map((segment, index) => <div key={`segment-${index}`} draggable onDragStart={event => begin(event, 'segment', shift, index, segment.start, segment.end)} style={place(segment.start, segment.end, 5, '#2563eb')} title="Arrastrar bloque · clic derecho o doble clic para editar">{clock(segment.start)}–{clock(segment.end)}</div>)}{shift.break != null && (shift.break_duration ?? 1) > 0 && <div draggable onDragStart={event => begin(event, 'break', shift, 0, shift.break, shift.break + (shift.break_duration ?? 1))} style={place(shift.break, shift.break + (shift.break_duration ?? 1), 29, '#d97706')} title="Arrastrar descanso">Descanso</div>}{(shift.exceptions || []).map((exception, index) => <div key={exception.id || index} draggable onDragStart={event => begin(event, 'exception', shift, index, exception.start, exception.end)} style={place(exception.start, exception.end, 52, '#b91c1c')} title="Arrastrar excepción · doble clic para editar"><span draggable onDragStart={event => begin(event, 'exception-start', shift, index, exception.start, exception.end)} aria-label="Mover inicio de excepción" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 8, background: '#7f1d1d', cursor: 'ew-resize' }} />{exception.type}<span draggable onDragStart={event => begin(event, 'exception-end', shift, index, exception.start, exception.end)} aria-label="Mover fin de excepción" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 8, background: '#7f1d1d', cursor: 'ew-resize' }} /></div>)}</div>} /><Column header="Acción" frozen alignFrozen="right" body={shift => <div className="tw-flex tw-gap-1"><Button label="Editar" text size="small" onClick={() => onEdit(shift)} /><Button label="Reunión 30 min" text size="small" onClick={() => onMeeting(shift)} /></div>} /></DataTable>;
+}
+
+export function WfmView({ model }) {
+  const [day, setDay] = useState(model.day);
+  const [team, setTeam] = useState(model.team);
+  const [plan, setPlan] = useState(model.plan);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [requestFilter, setRequestFilter] = useState('PENDIENTE');
+  const [requestType, setRequestType] = useState('');
+  const [requestFrom, setRequestFrom] = useState('');
+  const [requestTo, setRequestTo] = useState('');
+  const [requestPerson, setRequestPerson] = useState('');
+  const [requestSearch, setRequestSearch] = useState('');
+  const [requests, setRequests] = useState(model.requests || []);
+  const [decision, setDecision] = useState(null);
+  const [decisionNote, setDecisionNote] = useState('');
+  const [shiftEditor, setShiftEditor] = useState(null);
+  const [inspectPersonId, setInspectPersonId] = useState('');
+  const [personWeek, setPersonWeek] = useState(null);
+  const toast = useRef(null);
+  const notify = (severity, detail) => toast.current?.show({ severity, summary: severity === 'error' ? 'Error' : 'Listo', detail, life: 4500 });
+  const update = next => { setPlan(next); setDirty(true); };
+  const shiftChange = (userId, key, value) => update({ ...plan, shifts: plan.shifts.map(shift => shift.user_id === userId ? { ...shift, [key]: value, ...(key === 'start' || key === 'end' ? { segments: [{ start: key === 'start' ? value : shift.start, end: key === 'end' ? value : shift.end }] } : {}) } : shift) });
+  const load = async (nextDay = day, nextTeam = team) => { if (dirty && !window.confirm('¿Descartar el borrador sin guardar?')) return; setBusy(true); try { const next = await model.request(`/api/wfm/plan?date=${nextDay}&team=${encodeURIComponent(nextTeam)}`); setPlan(next); setDay(nextDay); setTeam(nextTeam); setDirty(false); } catch (error) { notify('error', error.message); } finally { setBusy(false); } };
+  const send = async operation => { if (busy) return; setBusy(true); try { const payload = { revision: plan.revision || 0, demand: plan.demand, shifts: plan.shifts, operation, confirm_exceptions: operation === 'publish' ? window.confirm('¿Publicar el día y confirmar las advertencias operativas?') : false }; if (operation === 'publish' && !payload.confirm_exceptions) return; const result = await model.request(`/api/wfm/plan?date=${day}&team=${encodeURIComponent(team)}`, { method: 'POST', body: JSON.stringify(payload) }); setPlan(result); setDirty(operation === 'optimize'); notify('success', operation === 'save' ? 'Borrador guardado' : operation === 'publish' ? 'Día publicado' : 'Descansos sugeridos'); } catch (error) { notify('error', error.message); } finally { setBusy(false); } };
+  const addPerson = userId => { const person = plan.people.find(item => item.id === Number(userId)); if (!person || plan.shifts.some(shift => shift.user_id === person.id)) return; const template = (plan.weekly_schedule || []).find(item => item.user_id === person.id); const start = template?.start ?? plan.window?.[0] ?? 16, end = template?.end ?? start + (plan.settings?.shift_slots || 13); const duration = plan.settings?.break_slots || 1; update({ ...plan, shifts: [...plan.shifts, { user_id: person.id, start, end, segments: [{ start, end }], break: template?.break_slot ?? start + Math.floor((end - start) / 2), break_duration: duration, overtime_slots: 0, exceptions: [], locked: false }] }); };
+  const removePerson = userId => update({ ...plan, shifts: plan.shifts.filter(item => item.user_id !== userId) });
+  const editShift = value => setShiftEditor({ ...value, segments: (value.segments || []).map(item => ({ ...item })), exceptions: (value.exceptions || []).map(item => ({ ...item })) });
+  const moveTimeline = (kind, userId, index, proposed) => {
+    const shift = plan.shifts.find(item => item.user_id === userId);
+    if (!shift) return;
+    const segments = shift.segments?.length ? shift.segments : [{ start: shift.start, end: shift.end }];
+    let next = shift;
+    if (kind === 'segment') {
+      const segment = segments[index]; if (!segment) return;
+      const duration = segment.end - segment.start;
+      const windowStart = plan.window?.[0] ?? 0, windowEnd = plan.window?.[1] ?? 72;
+      const start = Math.max(windowStart, Math.min(windowEnd - duration, proposed));
+      const end = start + duration;
+      if (index === 0 && start >= 48 || segments.some((item, position) => position !== index && item.start < end && start < item.end)) { notify('error', 'El bloque debe quedar libre y dentro del horizonte'); return; }
+      const delta = start - segment.start;
+      const moved = segments.map((item, position) => position === index ? { start, end } : item).sort((a, b) => a.start - b.start);
+      next = { ...shift, segments: moved, start: moved[0].start, end: moved.at(-1).end,
+        break: shift.break != null && segment.start <= shift.break && shift.break < segment.end ? shift.break + delta : shift.break,
+        exceptions: (shift.exceptions || []).map(item => segment.start <= item.start && item.end <= segment.end ? { ...item, start: item.start + delta, end: item.end + delta } : item) };
+    } else if (kind === 'break') {
+      const duration = shift.break_duration ?? 1;
+      const start = Math.max(0, Math.min(72 - duration, proposed));
+      if (!segments.some(item => item.start <= start && start + duration <= item.end)) { notify('error', 'El descanso debe quedar dentro de un bloque'); return; }
+      next = { ...shift, break: start };
+    } else if (kind === 'exception') {
+      const exception = shift.exceptions?.[index]; if (!exception) return;
+      const duration = exception.end - exception.start;
+      const start = Math.max(0, Math.min(72 - duration, proposed));
+      if (!segments.some(item => item.start <= start && start + duration <= item.end)) { notify('error', 'La excepción debe quedar dentro de un bloque'); return; }
+      next = { ...shift, exceptions: shift.exceptions.map((item, position) => position === index ? { ...item, start, end: start + duration } : item) };
+    } else if (kind === 'exception-start' || kind === 'exception-end') {
+      const exception = shift.exceptions?.[index]; if (!exception) return;
+      const start = kind === 'exception-start' ? Math.max(0, Math.min(proposed, exception.end - 1)) : exception.start;
+      const end = kind === 'exception-end' ? Math.min(72, Math.max(proposed, exception.start + 1)) : exception.end;
+      if (!segments.some(item => item.start <= start && end <= item.end)) { notify('error', 'La excepción debe quedar dentro de un bloque'); return; }
+      next = { ...shift, exceptions: shift.exceptions.map((item, position) => position === index ? { ...item, start, end } : item) };
+    }
+    if (next !== shift) update({ ...plan, shifts: plan.shifts.map(item => item.user_id === userId ? next : item) });
+  };
+  const addMeeting = shift => {
+    const segment = shift.segments?.[0] || { start: shift.start, end: shift.end };
+    if (!segment || segment.end <= segment.start) return;
+    const start = Math.min(segment.start + 2, segment.end - 1);
+    const exception = { id: `manual-${Date.now()}`, type: 'Reunión', start, end: start + 1, note: '' };
+    update({ ...plan, shifts: plan.shifts.map(item => item.user_id === shift.user_id ? { ...item, exceptions: [...(item.exceptions || []), exception] } : item) });
+  };
+  const editSegment = (index, key, value) => setShiftEditor(current => ({ ...current, segments: current.segments.map((item, position) => position === index ? { ...item, [key]: value } : item) }));
+  const editException = (index, key, value) => setShiftEditor(current => ({ ...current, exceptions: current.exceptions.map((item, position) => position === index ? { ...item, [key]: value } : item) }));
+  const saveShiftEditor = () => { const segments = shiftEditor.segments.slice().sort((a, b) => a.start - b.start); if (!segments.length || segments.some(item => item.start == null || item.end == null || item.start >= item.end)) { notify('error', 'Revisá los bloques del turno'); return; } const next = { ...shiftEditor, segments, start: segments[0].start, end: segments.at(-1).end }; update({ ...plan, shifts: plan.shifts.map(item => item.user_id === next.user_id ? next : item) }); setShiftEditor(null); };
+  const saveRequirements = async () => { setBusy(true); try { await model.request(`/api/wfm/requirements?team=${encodeURIComponent(team)}`, { method: 'POST', body: JSON.stringify({ requirements: plan.requirements }) }); notify('success', 'Requerimientos actualizados'); } catch (error) { notify('error', error.message); } finally { setBusy(false); } };
+  const weekStart = value => { const result = date(value); result.setDate(result.getDate() - (result.getDay() + 6) % 7); return iso(result); };
+  const weekDays = Array.from({ length: 7 }, (_, index) => { const value = date(weekStart(day)); value.setDate(value.getDate() + index); return iso(value); });
+  const inspectWeek = async () => { if (!inspectPersonId) return; const from = weekStart(day); const toDate = date(from); toDate.setDate(toDate.getDate() + 6); try { setPersonWeek(await model.request(`/api/wfm/person?from=${from}&to=${iso(toDate)}&team=${encodeURIComponent(team)}&user_id=${inspectPersonId}`)); } catch (error) { notify('error', error.message); } };
+  const moveWeek = offset => { const result = date(weekStart(day)); result.setDate(result.getDate() + offset); load(iso(result), team); };
+  const publishWeek = async () => { if (dirty) { notify('error', 'Guardá el borrador antes de publicar la semana'); return; } const start = weekStart(day); setBusy(true); try { const days = Array.from({ length: 7 }, (_, index) => { const value = date(start); value.setDate(value.getDate() + index); return iso(value); }); const plans = await Promise.all(days.map(value => model.request(`/api/wfm/plan?date=${value}&team=${encodeURIComponent(team)}`))); const expected_revisions = Object.fromEntries(days.map((value, index) => [value, plans[index].revision || 0])); const review = days.map((value, index) => `${value}: ${(plans[index].warnings || []).length ? plans[index].warnings.join("; ") : "sin advertencias"}`).join("\n"); if (!window.confirm(`¿Publicar los borradores de la semana del ${start}?\n\n${review}`)) return; const result = await model.request(`/api/wfm/publish-week?week=${start}&team=${encodeURIComponent(team)}`, { method: 'POST', body: JSON.stringify({ expected_revisions, confirm_exceptions: true }) }); notify('success', `${result.published_count} días publicados`); await load(day, team); } catch (error) { notify('error', error.message); } finally { setBusy(false); } };
+  const decide = async () => { if (!decision) return; setBusy(true); try { const body = { operation: 'decide', request_id: decision.request_id, decision: decision.decision, resolution_note: decisionNote, confirm_current_revision: false }; try { await model.request('/api/wfm/requests', { method: 'POST', body: JSON.stringify(body) }); } catch (error) { if (error.status !== 409 || !error.message.includes('horario publicado cambió') || !window.confirm(`${error.message}\n\n¿Confirmar la decisión sobre la revisión vigente?`)) throw error; await model.request('/api/wfm/requests', { method: 'POST', body: JSON.stringify({ ...body, confirm_current_revision: true }) }); } setRequests(await model.request(`/api/wfm/requests?team=${encodeURIComponent(team)}`)); setDecision(null); setDecisionNote(''); notify('success', 'Solicitud resuelta'); } catch (error) { notify('error', error.message); } finally { setBusy(false); } };
+  const coverage = (plan.demand || []).map((required, slot) => {
+    const operational = (plan.shifts || []).filter(shift => operationalAt(shift, slot)).length;
+    const visible = !plan.window || plan.window[0] <= slot && slot < plan.window[1];
+    return { required, operational, difference: visible && required != null ? operational - required : visible ? null : 0 };
+  });
+  const filteredRequests = requests.filter(item => (requestFilter === 'TODAS' || item.status === requestFilter)
+    && (!requestType || item.request_type === requestType)
+    && (!requestFrom || item.requested_date >= requestFrom)
+    && (!requestTo || item.requested_date <= requestTo)
+    && (!requestPerson || String(item.user_id) === requestPerson)
+    && (!requestSearch || [item.display_name, item.requester_name, item.reason, item.request_type].some(value => String(value || '').toLocaleLowerCase('es-UY').includes(requestSearch.toLocaleLowerCase('es-UY')))));
+  const [personId, setPersonId] = useState('');
+  return <div className="wfm-react-view tw-grid tw-min-w-0 tw-gap-4"><Toast ref={toast} /><Card title="Planificación de horarios" className="tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-items-end tw-gap-2"><label>Fecha<Calendar className="tw-block" value={date(day)} onChange={event => event.value && load(iso(event.value), team)} dateFormat="dd/mm/yy" showIcon /></label><label>Equipo<Dropdown className="tw-block" value={team} options={teams.map(value => ({ label: value, value }))} onChange={event => load(day, event.value)} /></label><Tag value={`Revisión ${plan.revision || 0} · Publicada ${plan.published_revision || 'ninguna'}${dirty ? ' · Sin guardar' : ''}`} severity={dirty ? 'warning' : 'info'} /><Button label="Semana anterior" outlined size="small" onClick={() => moveWeek(-7)} /><Button label="Semana siguiente" outlined size="small" onClick={() => moveWeek(7)} /><Button label="Recargar" outlined size="small" onClick={() => load(day, team)} /><Button label="Guardar borrador" size="small" loading={busy} onClick={() => send('save')} /><Button label="Sugerir descansos" outlined size="small" onClick={() => send('optimize')} /><Button label="Publicar día" severity="success" size="small" onClick={() => send('publish')} /><Button label="Publicar semana" severity="success" outlined size="small" onClick={publishWeek} /></div><div className="tw-mt-3 tw-flex tw-flex-wrap tw-gap-1">{weekDays.map((value, index) => <Button key={value} label={weekdays[index] + ' ' + value.slice(8)} size="small" outlined={value !== day} onClick={() => load(value, team)} />)}</div>{(plan.warnings || []).map((warning, index) => <p key={index} className="tw-text-amber-700">{warning}</p>)}</Card>
+<Card title="Semana publicada por persona" className="tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-items-end tw-gap-2"><Dropdown value={inspectPersonId} options={[{ label: 'Seleccionar integrante', value: '' }, ...(plan.people || []).map(person => ({ label: person.display_name, value: String(person.id) }))]} onChange={event => setInspectPersonId(event.value)} filter /><Button label="Consultar semana" outlined size="small" onClick={inspectWeek} disabled={!inspectPersonId} /></div></Card>
+    <Card title="Grilla de turnos" className="tw-min-w-0 tw-shadow-sm"><WfmTimeline plan={plan} onMove={moveTimeline} onEdit={editShift} onMeeting={addMeeting} /></Card>
+    <Card title="Turnos" className="tw-min-w-0 tw-shadow-sm"><div className="tw-mb-3 tw-flex tw-flex-wrap tw-gap-2"><Dropdown value={personId} options={[{ label: 'Seleccionar integrante', value: '' }, ...(plan.people || []).filter(person => !plan.shifts.some(shift => shift.user_id === person.id)).map(person => ({ label: person.display_name, value: person.id }))]} onChange={event => setPersonId(event.value)} filter /><Button label="Agregar turno" icon="pi pi-plus" size="small" onClick={() => { addPerson(personId); setPersonId(''); }} /></div><DataTable value={plan.shifts || []} dataKey="user_id" size="small" scrollable emptyMessage="No hay turnos en el borrador"><Column header="Agente" body={shift => plan.people?.find(person => person.id === shift.user_id)?.display_name || shift.user_id} /><Column header="Bloques" body={shift => (shift.segments || []).map(segment => `${clock(segment.start)}–${clock(segment.end)}`).join(' · ')} /><Column header="Descanso" body={shift => clock(shift.break)} /><Column header="Extra" body={shift => `${(shift.overtime_slots || 0) / 2} h`} /><Column header="Excepciones" body={shift => (shift.exceptions || []).map(item => item.type).join(', ') || '—'} /><Column header="Acción" body={shift => <div className="tw-flex tw-gap-1"><Button label="Editar" text size="small" onClick={() => editShift(shift)} /><Button label="Quitar" text severity="danger" size="small" onClick={() => removePerson(shift.user_id)} /></div>} /></DataTable></Card>
+<Card title="Demanda y cobertura" className="tw-min-w-0 tw-shadow-sm"><DataTable value={[{ label: 'Requeridos', value: slot => <InputNumber value={plan.demand[slot]} onValueChange={event => update({ ...plan, demand: plan.demand.map((value, index) => index === slot ? event.value : value) })} min={0} max={10000} useGrouping={false} inputStyle={{ width: 46 }} /> }, { label: 'Operativos', value: slot => coverage[slot]?.operational ?? '—' }, { label: 'Diferencia', value: slot => coverage[slot]?.difference ?? '—' }]} dataKey="label" size="small" scrollable scrollHeight="240px" className="tw-text-xs"><Column field="label" header="Franja" frozen />{Array.from({ length: Math.max(0, (plan.window?.[1] || 48) - (plan.window?.[0] || 0)) }, (_, index) => (plan.window?.[0] || 0) + index).map(slot => <Column key={slot} header={clock(slot)} body={row => row.value(slot)} style={{ minWidth: '76px' }} />)}</DataTable></Card>
+    <Card title="Requerimientos semanales" className="tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-gap-3">{(plan.requirements || []).map((value, index) => <label key={index}>{weekdays[index]}<InputNumber className="tw-block" value={value} onValueChange={event => setPlan(current => ({ ...current, requirements: current.requirements.map((item, position) => position === index ? event.value : item) }))} min={0} max={10000} useGrouping={false} /></label>)}</div><Button label="Guardar requerimientos" className="tw-mt-3" size="small" loading={busy} onClick={saveRequirements} /></Card>
+    <Card title="Solicitudes" className="tw-min-w-0 tw-shadow-sm"><div className="tw-mb-3 tw-flex tw-flex-wrap tw-items-end tw-gap-2"><label>Estado<Dropdown className="tw-block" value={requestFilter} options={['PENDIENTE', 'APROBADA', 'RECHAZADA', 'CANCELADA', 'TODAS'].map(value => ({ label: value, value }))} onChange={event => setRequestFilter(event.value)} /></label><label>Tipo<Dropdown className="tw-block" value={requestType} options={[{ label: 'Todos', value: '' }, { label: 'Ausencia', value: 'AUSENCIA' }, { label: 'Cambio de turno', value: 'CAMBIO_TURNO' }]} onChange={event => setRequestType(event.value)} /></label><label>Desde<Calendar className="tw-block" value={date(requestFrom)} onChange={event => setRequestFrom(iso(event.value))} dateFormat="dd/mm/yy" showIcon /></label><label>Hasta<Calendar className="tw-block" value={date(requestTo)} onChange={event => setRequestTo(iso(event.value))} dateFormat="dd/mm/yy" showIcon /></label><label>Persona<Dropdown className="tw-block" value={requestPerson} options={[{ label: 'Todas', value: '' }, ...(plan.people || []).map(person => ({ label: person.display_name, value: String(person.id) }))]} onChange={event => setRequestPerson(event.value)} filter /></label><label>Persona o motivo<InputText className="tw-block" value={requestSearch} onChange={event => setRequestSearch(event.target.value)} /></label></div><DataTable value={filteredRequests} dataKey="request_id" size="small" scrollable emptyMessage="No hay solicitudes"><Column header="Persona" body={item => item.display_name || item.requester_name || '—'} /><Column field="requested_date" header="Fecha" /><Column field="request_type" header="Tipo" /><Column field="status" header="Estado" /><Column header="Detalle" body={item => item.reason || '—'} /><Column header="Acción" body={item => item.status === 'PENDIENTE' && <div className="tw-flex tw-gap-1"><Button label="Aprobar" text size="small" onClick={() => setDecision({ ...item, decision: 'APROBAR' })} /><Button label="Rechazar" text severity="danger" size="small" onClick={() => setDecision({ ...item, decision: 'RECHAZAR' })} /></div>} /></DataTable></Card><Dialog header={`${decision?.decision === 'APROBAR' ? 'Aprobar' : 'Rechazar'} solicitud`} visible={Boolean(decision)} onHide={() => setDecision(null)} modal appendTo={document.getElementById('prime-react-root')} style={{ width: 'min(520px, 95vw)' }}><label className="tw-grid tw-gap-2">Nota de resolución<InputText value={decisionNote} onChange={event => setDecisionNote(event.target.value)} maxLength={500} /></label><div className="tw-mt-3 tw-flex tw-justify-end tw-gap-2"><Button label="Cancelar" text onClick={() => setDecision(null)} /><Button label="Confirmar" loading={busy} onClick={decide} /></div></Dialog><Dialog header="Semana publicada" visible={Boolean(personWeek)} onHide={() => setPersonWeek(null)} modal appendTo={document.getElementById('prime-react-root')} style={{ width: 'min(800px, 95vw)' }}>{personWeek && <div className="tw-grid tw-gap-2"><strong>{personWeek.person?.display_name}</strong>{(personWeek.days || []).map(item => <div key={item.date} className="tw-rounded-md tw-border tw-p-2"><strong>{item.date}</strong><div>{item.shift ? (item.shift.segments || []).map(segment => clock(segment.start) + '–' + clock(segment.end)).join(' · ') : item.published ? 'Libre publicado' : 'Sin publicación'}</div>{item.carry_in && <small>Continúa turno anterior hasta {clock(item.carry_in.end)}</small>}</div>)}</div>}</Dialog><Dialog header="Editar turno y excepciones" visible={Boolean(shiftEditor)} onHide={() => setShiftEditor(null)} modal appendTo={document.getElementById('prime-react-root')} style={{ width: 'min(700px, 95vw)' }}>{shiftEditor && <div className="tw-grid tw-gap-3"><strong>{plan.people?.find(person => person.id === shiftEditor.user_id)?.display_name}</strong>{shiftEditor.segments.map((segment, index) => <div key={index} className="tw-flex tw-flex-wrap tw-items-end tw-gap-2"><label>Inicio<InputNumber className="tw-block" value={segment.start} onValueChange={event => editSegment(index, 'start', event.value)} min={0} max={47} useGrouping={false} /></label><label>Fin<InputNumber className="tw-block" value={segment.end} onValueChange={event => editSegment(index, 'end', event.value)} min={1} max={72} useGrouping={false} /></label><Button label="Quitar bloque" text severity="danger" size="small" onClick={() => setShiftEditor(current => ({ ...current, segments: current.segments.filter((_, position) => position !== index) }))} /></div>)}<Button label="Agregar bloque" outlined size="small" onClick={() => setShiftEditor(current => ({ ...current, segments: [...current.segments, { start: Math.min(47, current.segments.at(-1)?.end || 16), end: Math.min(72, (current.segments.at(-1)?.end || 16) + 2) }] }))} /><label>Descanso<InputNumber className="tw-block" value={shiftEditor.break} onValueChange={event => setShiftEditor(current => ({ ...current, break: event.value }))} min={0} max={71} useGrouping={false} /></label><label>Horas extra (franjas)<InputNumber className="tw-block" value={shiftEditor.overtime_slots || 0} onValueChange={event => setShiftEditor(current => ({ ...current, overtime_slots: event.value }))} min={0} max={24} useGrouping={false} /></label><label className="tw-flex tw-gap-2"><Checkbox checked={Boolean(shiftEditor.locked)} onChange={event => setShiftEditor(current => ({ ...current, locked: event.checked }))} />Bloquear descanso</label><strong>Excepciones</strong>{shiftEditor.exceptions.map((exception, index) => <div key={exception.id || index} className="tw-grid tw-gap-2 tw-rounded-md tw-border tw-p-2"><Dropdown value={exception.type} options={(plan.exception_types || ['Ausencia']).map(value => ({ label: value, value }))} onChange={event => editException(index, 'type', event.value)} /><div className="tw-flex tw-gap-2"><InputNumber value={exception.start} onValueChange={event => editException(index, 'start', event.value)} min={0} max={71} useGrouping={false} /><InputNumber value={exception.end} onValueChange={event => editException(index, 'end', event.value)} min={1} max={72} useGrouping={false} /></div><InputTextarea value={exception.note || ''} onChange={event => editException(index, 'note', event.target.value)} maxLength={240} /><Button label="Quitar excepción" text severity="danger" size="small" onClick={() => setShiftEditor(current => ({ ...current, exceptions: current.exceptions.filter((_, position) => position !== index) }))} /></div>)}<Button label="Agregar excepción" outlined size="small" onClick={() => setShiftEditor(current => ({ ...current, exceptions: [...current.exceptions, { id: `manual-${Date.now()}`, type: plan.exception_types?.[0] || 'Ausencia', start: current.segments[0]?.start || 0, end: current.segments[0]?.end || 1, note: '' }] }))} /><div className="tw-flex tw-justify-end tw-gap-2"><Button label="Cancelar" text onClick={() => setShiftEditor(null)} /><Button label="Aplicar al borrador" onClick={saveShiftEditor} /></div></div>}</Dialog>
+  </div>;
+}

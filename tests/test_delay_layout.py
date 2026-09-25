@@ -8,6 +8,7 @@ class DelayLayoutRegressionTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         cls.script=(root/"app"/"static"/"app.js").read_text(encoding="utf-8")
         cls.index=(root/"app"/"static"/"index.html").read_text(encoding="utf-8")
+        cls.dashboard_styles=(root/"app"/"static"/"dashboard.css").read_text(encoding="utf-8")
 
     def test_dashboard_only_maps_verified_delays(self):
         self.assertIn("distributions.delays_by_department",self.script)
@@ -30,10 +31,17 @@ class DelayLayoutRegressionTests(unittest.TestCase):
         self.assertIn("resolution_note",self.script)
         self.assertIn("/verify",self.script)
 
+    def test_arrival_cards_wrap_actions_without_page_overflow(self):
+        self.assertIn("tw-flex-wrap",self.script)
+        self.assertIn("tw-max-w-full",self.script)
+        self.assertIn(".standard-actions{display:flex!important",self.dashboard_styles)
+        self.assertIn("flex-wrap:wrap",self.dashboard_styles)
+        self.assertIn(".standards-layout>*{min-width:0",self.dashboard_styles)
+
     def test_asset_versions_deliver_the_new_interface(self):
-        self.assertIn('/app.js?v=49',self.index)
-        self.assertIn('/dashboard.css?v=4',self.index)
-        self.assertIn('/styles.css?v=23',self.index)
+        self.assertIn('/app.js?v=57',self.index)
+        self.assertIn('/dashboard.css?v=7',self.index)
+        self.assertIn('/styles.css?v=28',self.index)
 
     def test_dashboard_exposes_delay_control_metrics(self):
         self.assertIn("d.delay_metrics",self.script)

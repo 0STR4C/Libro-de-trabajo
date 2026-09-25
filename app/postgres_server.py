@@ -54,6 +54,7 @@ from .quotes import (
     validate_manual_distances,
 )
 from .tolls import detect_toll_passes
+from .tile_proxy import TileProxyError, fetch_osm_tile
 from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
 from .dashboard import build_dashboard_payload
 from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
@@ -822,7 +823,7 @@ async def request_limits_and_security_headers(request: Request, call_next):
         return JSONResponse({"detail": "El cuerpo de la solicitud es demasiado grande"}, status_code=413)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     docs_sources = " https://cdn.jsdelivr.net" if ENABLE_API_DOCS else ""
@@ -830,12 +831,12 @@ async def request_limits_and_security_headers(request: Request, call_next):
         "default-src 'self'; "
         f"script-src 'self' https://accounts.google.com{docs_sources}; "
         f"style-src 'self' 'unsafe-inline'{docs_sources}; "
-        "img-src 'self' data: blob: https://*.tile.openstreetmap.org; "
+        "img-src 'self' data: blob:; "
         "font-src 'self'; connect-src 'self' https://accounts.google.com; "
         "frame-src https://accounts.google.com; frame-ancestors 'none'; "
         "base-uri 'self'; form-action 'self'; object-src 'none'"
     )
-    if request.url.path.startswith("/api/") or request.url.path in {"/health", "/docs", "/redoc", "/openapi.json"}:
+    if (request.url.path.startswith("/api/") and not request.url.path.startswith("/api/tiles/")) or request.url.path in {"/health", "/docs", "/redoc", "/openapi.json"}:
         response.headers["Cache-Control"] = "no-store"
     if request_is_https(request):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -898,6 +899,26 @@ def health():
     except Exception as error:
         LOGGER.exception("Comprobación de salud fallida")
         raise HTTPException(503, "El servicio no está listo") from error
+
+
+@app.get("/api/tiles/{z}/{x}/{y}.png", include_in_schema=False)
+def map_tile(z: int, x: int, y: int, request: Request):
+    referer = request.headers.get("referer") or str(request.base_url)
+    try:
+        tile = fetch_osm_tile(z, x, y, referer=referer)
+    except ValueError as error:
+        raise HTTPException(404, str(error)) from None
+    except TileProxyError:
+        LOGGER.warning("No se pudo servir el mosaico OSM %s/%s/%s", z, x, y)
+        raise HTTPException(502, "El mapa base no está disponible temporalmente") from None
+    return Response(
+        content=tile.content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400, stale-if-error=604800",
+            "X-Tile-Cache": tile.cache_status,
+        },
+    )
 
 
 @app.get("/api/auth/me")

@@ -10,11 +10,15 @@ $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $uiScript = Join-Path $root 'tools\wfm_offline_build\ui_smoke.cjs'
+$dashboardUiScript = Join-Path $root 'tools\wfm_offline_build\dashboard_smoke.cjs'
+$noticeUiScript = Join-Path $root 'tools\wfm_offline_build\notice_smoke.cjs'
 $playwrightModule = Join-Path $root 'tools\wfm_offline_build\node_modules\playwright'
 $javascriptFiles = @(
     (Join-Path $root 'app\static\app.js'),
     (Join-Path $root 'app\static\wfm.js'),
-    $uiScript
+    $uiScript,
+    $dashboardUiScript,
+    $noticeUiScript
 )
 
 Write-Host '1/3 Suite general aislada'
@@ -42,8 +46,10 @@ foreach ($file in $javascriptFiles) {
 if (-not $SkipUiSmoke) {
     if (Test-Path -LiteralPath $playwrightModule -PathType Container) {
         Write-Host 'Prueba UI aislada'
-        & $node.Source $uiScript
-        if ($LASTEXITCODE -ne 0) { throw 'La prueba UI informó fallos.' }
+        foreach ($script in @($uiScript, $dashboardUiScript, $noticeUiScript)) {
+            & $node.Source $script
+            if ($LASTEXITCODE -ne 0) { throw "La prueba UI informó fallos: $script" }
+        }
     }
     else {
         Write-Warning 'Playwright no está instalado localmente; la prueba UI queda omitida. Consulte tools/wfm_offline_build/README.md.'

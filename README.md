@@ -151,7 +151,7 @@ se deben inventar posiciones de cobro.
 - Registro de auditoría de altas, ediciones y cambios de estado.
 - API documentada automáticamente en `/docs` durante desarrollo; en producción la documentación queda deshabilitada salvo habilitación explícita.
 
-La versión actual es **1.30.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y puede consultarse dentro de **Configuración → Novedades**.
+La versión actual es **1.32.0**. El detalle de cada entrega se mantiene en [CHANGELOG.md](CHANGELOG.md) y puede consultarse dentro de **Configuración → Novedades**.
 
 La aplicación **no lee ni escribe Excel durante su funcionamiento**. La planilla fue utilizada solamente para relevar los procesos y definir el modelo inicial.
 
@@ -265,6 +265,34 @@ flujo de mantenimiento en [DEVELOPMENT.md](DEVELOPMENT.md) y los archivos
 operativos excluidos de Git en [DATA_MANIFEST.md](DATA_MANIFEST.md). La matriz y
 los límites de cobertura están en [TESTING.md](TESTING.md).
 
+El desarrollo de interfaz cuenta con **UI UX Pro Max (UUPM)**, instalado en
+`.claude/skills/ui-ux-pro-max/`. Es una herramienta local de diseño para quienes
+trabajan en el frontend; no se ejecuta en el backend ni en el navegador. Consulte
+la [guía de uso y coordinación](tools/ui_ux_guidance/README.md), el
+[mensaje inicial del apartado 11](tools/ui_ux_guidance/PROMPT_11.md) y el
+[plan UI/UX](UI_UX_PLAN.md) antes de realizar mejoras visuales.
+
+Las rutas operativas usan React, PrimeReact, PrimeIcons y Tailwind CSS compilados
+con Vite. La [auditoría de migración](MIGRATION_AUDIT.md) distingue estas vistas
+del shell y las interacciones WFM todavía pendientes. La
+[guía de compilación](tools/frontend_build/README.md) explica el aislamiento
+respecto del CSS heredado y los comandos reproducibles.
+
+### Directiva Global de Diseño UI/UX y Sistema de Componentes
+
+Las pantallas nuevas y migradas deben usar componentes nativos de PrimeReact y
+Tailwind con el prefijo `tw-`, sobre la base **Lara Light Blue**. La estética es
+operativa B2B: azul corporativo (`#1677ff` / `#2563eb`), fondos gris claro,
+superficies blancas, sombras y radios discretos, tablas densas con filas de 36 px
+a 40 px y texto tabular de 13 px/14 px.
+
+Los colores `--color-urgente`, `--color-espera` y `--color-ok` quedan reservados
+para alertas, seguimiento y estados normales respectivamente. Las acciones
+secundarias de cada fila deben agruparse en menús kebab accesibles. Consulte la
+[directiva normativa completa](CLAUDE.md) y su aplicación arquitectónica en
+[ARCHITECTURE.md](ARCHITECTURE.md). El CSS heredado permanece aislado durante la
+migración mediante el prefijo `tw-`, `#prime-react-root` y Preflight desactivado.
+
 ### Estado de esta computadora
 
 El 7 de septiembre de 2026 se reconstruyeron los contenedores y se restauró en un volumen PostgreSQL nuevo el respaldo verificado `postgres-backups/centro_operativo_20260905T043730Z.dump`. Se validaron la aplicación, el ingreso, la lectura de registros, la exportación CSV y un nuevo respaldo automático. Los servicios `app`, `db` y `backup` quedaron activos. En esta computadora no vuelva a ejecutar la migración sobre el volumen actual: para iniciar o reanudar el servicio use solamente:
@@ -292,7 +320,7 @@ Las sesiones PostgreSQL se conservan como hashes con vencimiento, no como tokens
 
 Administrador y Supervisor pueden descargar reportes de Avisos, Demoras, Programados, Horarios y Cotizaciones como CSV compatibles con Excel. El Administrador también puede descargar el Registro de auditoría. Cada archivo usa encabezados descriptivos y evita que textos operativos se interpreten como fórmulas.
 
-Avisos incluye filtros por fecha desde/hasta, estado, número de tarea, teléfono o contacto y texto libre. Demoras permite filtrar por fecha desde/hasta, estado (vigente, normalizada o todas), departamento, prestación y texto libre; el reporte descargado conserva esos filtros. Programados respeta tarea, fecha y vista de finalizados. **Horarios** conserva cada registro por fecha y semana, permite navegar semana a semana, consultar el historial por persona o rol y descargar el resultado. Desde cada celda se puede precargar una fecha y persona; **Copiar semana anterior** respeta el filtro de persona o rol y omite, sin reemplazar, registros duplicados o superpuestos. Los turnos nocturnos pueden finalizar al día siguiente. Los usuarios activos de Telefonista, Planificador y Supervisor se cargan desde **Configuración → General → Horarios del equipo** mediante un modal. Cotizaciones permite descargar el historial con distancias, desglose de precios, tipo de servicio y usuario que cotizó.
+Avisos incluye filtros por fecha desde/hasta, estado, número de tarea, teléfono o contacto y texto libre. Demoras permite filtrar por fecha desde/hasta, estado (vigente, normalizada o todas), departamento, prestación y texto libre; el reporte descargado conserva esos filtros. Programados respeta tarea, fecha y vista de finalizados. **Horarios** es de solo lectura: permite navegar semana a semana, consultar el historial publicado por persona o rol y descargar el resultado. Los turnos nocturnos pueden continuar al día siguiente. Las altas y modificaciones de turnos se realizan en **Supervisión → Planificación de horarios** y se reflejan en Horarios al publicar. La API de horarios históricos conserva la operación de copia semanal, pero no aparece en la vista React actual. Cotizaciones permite descargar el historial con distancias, desglose de precios, tipo de servicio y usuario que cotizó.
 
 ## Modelo de datos
 

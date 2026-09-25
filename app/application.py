@@ -6,12 +6,12 @@ except ImportError:
     from releases import release_payload
 
 
-APP_VERSION = "1.30.0"
+APP_VERSION = "1.32.0"
 CURRENT_VERSION_NOTES = [
-    "Producción exige una URL pública HTTPS coherente con las cookies de sesión seguras.",
-    "SQLite y PostgreSQL consumen reglas compartidas sin que un servidor importe al otro.",
-    "Las migraciones aplicadas conservan checksums y la inicialización repetida queda verificada.",
-    "Un único comando valida Python, JavaScript, interfaz y PostgreSQL aislado.",
+    "El alta de avisos ofrece motivos predefinidos, etiquetas opcionales claras y menos texto técnico.",
+    "La autoasignación se realiza directamente desde la columna Responsable.",
+    "Cada aviso reúne Asignar, Editar e Historial en un menú contextual según rol y permisos.",
+    "El selector de estado despliega sus opciones debajo del control en escritorio y móvil.",
 ]
 
 PERMISSIONS = {
@@ -54,4 +54,4 @@ SCHEDULE_ROLES = ("Telefonista", "Planificador", "Supervisor")
 
 
 def current_release_payload():
-    return release_payload(APP_VERSION, "2026-09-13", CURRENT_VERSION_NOTES)
+    return release_payload(APP_VERSION, "2026-09-23", CURRENT_VERSION_NOTES)

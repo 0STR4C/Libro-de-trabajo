@@ -4,6 +4,34 @@ Este documento registra el orden de trabajo y el criterio de verificación de la
 interfaz de Libro de Trabajo. Las mejoras preservan la identidad, los permisos y
 los datos operativos existentes.
 
+Las etapas marcadas «completada» documentan verificaciones históricas de la
+interfaz anterior. La [auditoría React vigente](MIGRATION_AUDIT.md) enumera la
+paridad que falta comprobar o recuperar, especialmente en Planificación WFM.
+
+## Fuente de diseño para próximas mejoras · UUPM
+
+El 23/09/2026 se verificó la presencia de UI UX Pro Max en
+`.claude/skills/ui-ux-pro-max/`, con instrucciones, referencias, scripts y
+catálogos locales. Es una herramienta para orientar el desarrollo de interfaz;
+su incorporación no modifica las pantallas ni revalida las etapas históricas
+registradas más abajo.
+
+Cada nueva tarea UI/UX debe comenzar leyendo su `SKILL.md` y revisando el estado
+actual de la pantalla. Elegir una consulta enfocada, comprobar que los resultados
+correspondan al problema y registrar las reglas aplicadas o las excepciones
+justificadas. Las prioridades son accesibilidad, interacción, legibilidad,
+consistencia y rendimiento, preservando la identidad de Libro de Trabajo.
+
+El procedimiento, requisitos y ejemplos están en
+[`tools/ui_ux_guidance/README.md`](tools/ui_ux_guidance/README.md). El mensaje inicial
+reutilizable de **11 · Interfaz y experiencia de uso** está en
+[`tools/ui_ux_guidance/PROMPT_11.md`](tools/ui_ux_guidance/PROMPT_11.md).
+Las áreas funcionales que modifiquen interfaz deben seguir el mismo procedimiento.
+
+La revisión del 23/09/2026 no encontró un `design-system/` persistido. La primera
+propuesta global deberá contrastarse con los estilos existentes antes de adoptarla.
+No se deben generar sistemas visuales distintos por conversación.
+
 ## Etapa 0 — Base y trazabilidad · completada
 
 - Se relevó el estado del repositorio antes de editar y se preservaron los

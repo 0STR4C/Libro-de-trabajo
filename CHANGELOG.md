@@ -1,5 +1,21 @@
 # Registro de versiones
 
+## 1.32.0 — 23 de septiembre de 2026 (Flujo de Avisos simplificado)
+
+- Registrar nuevo aviso reemplaza el motivo libre por opciones operativas predefinidas y presenta los campos opcionales con etiquetas consistentes.
+- La ayuda técnica sobre fecha, hora y usuario se retiró del modal para reducir ruido visual.
+- Los avisos sin responsable permiten tomar el caso directamente desde la columna Responsable.
+- Las acciones de fila se concentran en un menú de tres puntos: Asignar para Supervisión, Editar según permisos e Historial para todos.
+- El selector de estado despliega las opciones debajo del control y se verifica con datos sintéticos en escritorio y móvil.
+
+## 1.31.0 — 23 de septiembre de 2026 (Jerarquía del Resumen operativo)
+
+- Resumen muestra primero el mapa de demoras, sus indicadores vigentes y el estado de avisos abiertos.
+- Una franja intermedia reúne los avisos que requieren gestión con sus alertas operativas.
+- Programados pendientes y su distribución por estado quedan juntos al final de la página.
+- Supervisión se ubica inmediatamente sobre Configuración; su chevron queda a la derecha y desaparece al minimizar el menú.
+- Una prueba visual sintética verifica la jerarquía, el menú expandido y minimizado, y la adaptación móvil.
+
 ## 1.30.0 — 13 de septiembre de 2026 (Base técnica y despliegue seguro)
 
 - Producción exige `PUBLIC_BASE_URL` con HTTPS y conserva FastAPI en loopback detrás de un proxy TLS, evitando sesiones inutilizables por cookies `Secure` sobre HTTP.

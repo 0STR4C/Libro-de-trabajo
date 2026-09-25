@@ -29,11 +29,14 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+      OSM_TILE_CACHE_DIR: /var/cache/librodetrabajo/osm-tiles
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    volumes:
+      - osm_tile_cache:/var/cache/librodetrabajo/osm-tiles
     depends_on:
       db:
         condition: service_healthy
@@ -83,3 +86,4 @@ services:
 
 volumes:
   postgres_data:
+  osm_tile_cache:

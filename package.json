@@ -1,0 +1,22 @@
+{
+  "name": "libro-de-trabajo-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:frontend": "vite build",
+    "check:frontend": "npm run build:frontend"
+  },
+  "dependencies": {
+    "primeicons": "7.0.0",
+    "primereact": "10.9.7",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "10.6.1",
+    "postcss": "8.5.28",
+    "tailwindcss": "3.4.19",
+    "vite": "7.3.6"
+  }
+}

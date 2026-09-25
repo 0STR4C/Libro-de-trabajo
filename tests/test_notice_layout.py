@@ -10,6 +10,7 @@ class NoticeLayoutRegressionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.javascript = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
         cls.styles = (ROOT / "app" / "static" / "styles.css").read_text(encoding="utf-8")
+        cls.frontend = (ROOT / "frontend" / "main.jsx").read_text(encoding="utf-8")
 
     def test_attention_views_are_visible(self):
         for label in ("Sin responsable", "Asignados a mí", "En espera"):
@@ -25,6 +26,8 @@ class NoticeLayoutRegressionTests(unittest.TestCase):
         self.assertIn("['Antigüedad',r=>noticeAge(r)]", self.javascript)
         self.assertIn("['Responsable',r=>noticeOwner(r)]", self.javascript)
         self.assertIn("Te corresponde", self.javascript)
+        self.assertIn("Asignarme este caso", self.javascript)
+        self.assertNotIn('>Gestionar</button>', self.javascript)
 
     def test_assignment_uses_active_notice_users(self):
         self.assertIn("/api/notices/assignees", self.javascript)
@@ -52,6 +55,35 @@ class NoticeLayoutRegressionTests(unittest.TestCase):
         self.assertIn("¿Qué necesita saber o hacer el equipo?", self.javascript)
         self.assertIn("Asignármelo al guardar", self.javascript)
         self.assertIn('name="managed_by" value="${esc(currentUser)}"', self.javascript)
+        self.assertIn('Número de tarea (opcional)', self.javascript)
+        self.assertIn('Teléfono del cliente (opcional)', self.javascript)
+        self.assertIn('<select name="notice_type" required>', self.javascript)
+        self.assertIn('Volverán a llamar', self.javascript)
+        self.assertIn('Reclama no cumplimiento', self.javascript)
+        self.assertIn('Se envió HSM', self.javascript)
+        self.assertNotIn('La fecha, hora y usuario (${esc(currentUser)}) se registran automáticamente. Antes de guardar se revisarán coincidencias abiertas.', self.javascript)
+
+    def test_row_actions_use_a_conditional_overflow_menu(self):
+        self.assertNotIn("['Acciones',r=>noticeActions(r)]", self.javascript)
+        self.assertIn("['Opciones',r=>noticeActions(r)]", self.javascript)
+        self.assertIn("authUser?.role_name==='Supervisor'&&can('notices.assign')", self.javascript)
+        self.assertIn("can('notices.comment')", self.javascript)
+        self.assertIn('>Historial</button>', self.javascript)
+        self.assertIn('notice-actions-menu', self.styles + self.javascript)
+
+    def test_status_menu_opens_below_its_trigger(self):
+        operations = (ROOT / "app" / "static" / "operations.css").read_text(encoding="utf-8")
+        self.assertIn('.status-dropdown .status-options', operations)
+        self.assertIn('top:calc(100% + 6px)', operations)
+        self.assertIn('bottom:auto', operations)
+
+    def test_notice_view_uses_primereact_cards_and_datatable(self):
+        self.assertIn("mountNotices", self.frontend)
+        self.assertIn("<DataTable", self.frontend)
+        self.assertIn("<Column", self.frontend)
+        self.assertIn("notice-prime-metric", self.frontend)
+        self.assertIn("tw-shadow-sm", self.frontend)
+        self.assertIn("migrateNoticesVisual", self.javascript)
 
     def test_closure_requires_a_result(self):
         self.assertIn("openNoticeClosure", self.javascript)

@@ -16,6 +16,7 @@ try:
     from .notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
     from .quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from .tolls import detect_toll_passes
+    from .tile_proxy import TileProxyError, fetch_osm_tile
     from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
     from .scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
     from .security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
@@ -30,6 +31,7 @@ except ImportError:
     from notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
     from quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from tolls import detect_toll_passes
+    from tile_proxy import TileProxyError, fetch_osm_tile
     from reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
     from scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
     from security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
@@ -459,11 +461,11 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self,*a): pass
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tile.openstreetmap.org; font-src 'self'; connect-src 'self' https://accounts.google.com; frame-src https://accounts.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
-        if self.path.startswith("/api/"):
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://accounts.google.com; frame-src https://accounts.google.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+        if self.path.startswith("/api/") and not self.path.startswith("/api/tiles/"):
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
     def send_json(self,v,status=200,extra_headers=()):
@@ -544,6 +546,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'detail':'No se pudo completar la operación WFM. Reiniciá el servicio y volvé a intentar.'},500)
     def do_GET(self):
         parsed=urlparse(self.path);path=parsed.path;params=parse_qs(parsed.query)
+        tile_match=re.fullmatch(r"/api/tiles/(\d+)/(\d+)/(\d+)\.png",path)
+        if tile_match:
+            z,x,y=map(int,tile_match.groups())
+            try:tile=fetch_osm_tile(z,x,y,referer=self.headers.get("Referer") or f"http://{self.headers.get('Host','localhost:8000')}/")
+            except ValueError:return self.send_json({"detail":"Coordenadas de mosaico fuera de rango"},404)
+            except TileProxyError:return self.send_json({"detail":"El mapa base no está disponible temporalmente"},502)
+            self.send_response(200);self.send_header("Content-Type","image/png");self.send_header("Content-Length",str(len(tile.content)));self.send_header("Cache-Control","public, max-age=86400, stale-if-error=604800");self.send_header("X-Tile-Cache",tile.cache_status);self.end_headers();self.wfile.write(tile.content);return
         if path.startswith('/api/wfm/'):return self.wfm_request('GET')
         if path=="/health": return self.send_json({"status":"ok"})
         if not path.startswith("/api/"):

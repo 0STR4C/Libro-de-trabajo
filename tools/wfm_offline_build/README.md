@@ -32,6 +32,8 @@ Ejecución desde la raíz del proyecto:
 
 ```powershell
 node tools/wfm_offline_build/ui_smoke.cjs
+node tools/wfm_offline_build/dashboard_smoke.cjs
+node tools/wfm_offline_build/notice_smoke.cjs
 ```
 
 Para conservar capturas visuales con los mismos datos sintéticos:
@@ -39,11 +41,17 @@ Para conservar capturas visuales con los mismos datos sintéticos:
 ```powershell
 $env:UX_SCREENSHOT_DIR = ".\artifacts\ui-ux"
 node tools/wfm_offline_build/ui_smoke.cjs
+node tools/wfm_offline_build/dashboard_smoke.cjs
+node tools/wfm_offline_build/notice_smoke.cjs
 Remove-Item Env:UX_SCREENSHOT_DIR
 ```
 
-La carpeta indicada recibe `novedades-escritorio.png`, `novedades-movil.png` y
-`formulario-movil.png`. La herramienta no sobrescribe datos de la aplicación;
+La carpeta indicada recibe `novedades-escritorio.png`, `novedades-movil.png`,
+`formulario-movil.png`, `resumen-escritorio.png`,
+`resumen-oscuro.png`, `resumen-sidebar-minimizado.png`, `resumen-movil.png`,
+`arribos-escritorio.png`, `arribos-movil.png`, `avisos-nuevo-modal.png`,
+`avisos-tabla-escritorio.png`, `avisos-tabla-oscuro.png` y
+`avisos-tabla-movil.png`. La herramienta no sobrescribe datos de la aplicación;
 solo esos archivos de salida si ya existen en el destino elegido.
 
 Comprueba alta, cruce de medianoche, tijera, merma sobre la cobertura, punto de
@@ -56,5 +64,16 @@ su expansión inicial y verifica que no desborde una pantalla móvil de 390 px.
 En ese mismo viewport comprueba la apertura y cierre de la navegación, el
 significado de las columnas en tablas adaptables y la asociación entre etiquetas
 y campos obligatorios dentro de un modal.
+`dashboard_smoke.cjs` comprueba el montaje PrimeReact, las clases Tailwind, los
+tres modos de tema y la jerarquía Mapa y demoras → Avisos operativos →
+Programados con datos sintéticos. También valida el orden Supervisión →
+Configuración, el chevron a la derecha y su ocultamiento al minimizar, la
+ausencia de solapamientos y el ancho móvil. La misma prueba verifica que las
+tarjetas, badges y acciones de Tiempos de arribo no desborden sus contenedores.
+`notice_smoke.cjs` comprueba las tarjetas y `DataTable` PrimeReact, filas de
+36–40 px en escritorio, tema oscuro, el modal de alta, la autoasignación, los
+permisos del menú contextual, el menú de estado debajo de su disparador y la
+adaptación móvil de Avisos. También valida el Header sin subtítulo ni indicador
+de sistema, el perfil desplegable y la salida con color semántico.
 La API se simula y toda petición del navegador se bloquea. Solo crea el perfil
 temporal de Edge que Playwright gestiona; no modifica archivos ni datos operativos.
