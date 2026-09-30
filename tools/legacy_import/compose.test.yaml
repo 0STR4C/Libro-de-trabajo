@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: legacy_test
+      POSTGRES_PASSWORD: synthetic_test_only
+      POSTGRES_DB: legacy_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U legacy_test -d legacy_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    networks: [isolated]
+  tests:
+    image: librodetrabajo-app:latest
+    working_dir: /work
+    environment:
+      DATABASE_URL: postgresql://legacy_test:synthetic_test_only@db:5432/legacy_test
+    volumes:
+      - ../..:/work:ro
+    command: [python, -B, -m, unittest, tools.legacy_import.test_import, -v]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [isolated]
+networks:
+  isolated:
+    internal: true

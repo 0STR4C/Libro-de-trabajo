@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button } from 'primereact/button';
 import { Calendar } from 'primereact/calendar';
 import { Card } from 'primereact/card';
@@ -24,15 +24,38 @@ const options = values => values.map(value => ({ label: value, value }));
 const asDate = value => value ? new Date(`${value}T12:00:00`) : null;
 const dateString = value => value ? `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` : '';
 const formatDate = value => value ? new Date(value).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+const formatNoticeTime = value => value ? new Date(value).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+const noticeIsClosed = row => ['RESUELTO', 'CANCELADO'].includes(row.status);
+const noticeStatusDisplay = {
+  PENDIENTE: { label: 'Pendiente', severity: 'danger' },
+  EN_GESTION: { label: 'En gestión', severity: 'info' },
+  ESPERANDO_RESPUESTA: { label: 'Esperando respuesta', severity: 'warning' },
+  RESUELTO: { label: 'Resuelto', severity: 'success' },
+  CANCELADO: { label: 'Cancelado', severity: 'secondary' }
+};
+const noticeState = row => {
+  if (!row.managed_by && !noticeIsClosed(row)) return { label: 'Sin responsable', severity: 'danger' };
+  return noticeStatusDisplay[row.status] || { label: statusNames[row.status] || row.status, severity: 'secondary' };
+};
 const errorText = error => error?.message || 'No se pudo completar la operación';
 
 function Field({ label, children, wide = false }) {
   return <label className={`tw-flex tw-min-w-0 tw-flex-col tw-gap-1 tw-text-xs tw-font-medium ${wide ? 'md:tw-col-span-2' : ''}`}><span>{label}</span>{children}</label>;
 }
 
+let activeRowMenu = null;
+
 function RowMenu({ id, items, label, text }) {
   const menu = useRef(null);
-  return <><Menu ref={menu} id={`row-menu-${id}`} model={items} popup appendTo={document.body} /><Button className="tw-h-9" type="button" icon="pi pi-ellipsis-v" label={text} text rounded={!text} size="small" aria-label={label} aria-haspopup="menu" aria-controls={`row-menu-${id}`} onClick={event => menu.current?.toggle(event)} /></>;
+  useEffect(() => () => { if (activeRowMenu?.id === id) { menu.current?.hide(); activeRowMenu = null; } }, [id]);
+  const toggle = event => {
+    event.stopPropagation();
+    if (activeRowMenu?.id === id) { menu.current?.hide(); activeRowMenu = null; return; }
+    activeRowMenu?.menu?.current?.hide();
+    menu.current?.show(event);
+    activeRowMenu = { id, menu };
+  };
+  return <><Menu ref={menu} id={`row-menu-${id}`} model={items} popup={true} appendTo={document.body} onHide={() => { if (activeRowMenu?.id === id) activeRowMenu = null; }} /><Button className="tw-h-9" type="button" icon="pi pi-ellipsis-v" label={text} text rounded={!text} size="small" aria-label={label} aria-haspopup="menu" aria-controls={`row-menu-${id}`} onClick={toggle} /></>;
 }
 
 function useOperation(model) {
@@ -67,6 +90,9 @@ function useOperation(model) {
 
 export function DelaysView({ model }) {
   const [filters, setFilters] = useState(model.filters);
+  const [page, setPage] = useState(model.page);
+  useEffect(() => setFilters(model.filters), [model.filters]);
+  useEffect(() => setPage(model.page), [model.page]);
   const [dialog, setDialog] = useState(null);
   const [form, setForm] = useState(delayBlank);
   const [events, setEvents] = useState([]);
@@ -93,6 +119,7 @@ export function DelaysView({ model }) {
     }
   };
   const changeFilter = (key, value) => setFilters(current => ({ ...current, [key]: value }));
+  const turnPage = async (offset, limit) => { try { setPage(await model.onPage(offset, limit)); } catch (error) { notify('error', 'No se pudo cambiar de página', errorText(error)); } };
   const actionItems = row => [
     ...(row.status === 'VIGENTE' && model.canNormalize ? [
       { label: row.needs_review ? 'Confirmar vigencia' : 'Renovar control', icon: 'pi pi-check', command: () => open('verify', row) },
@@ -112,8 +139,8 @@ export function DelaysView({ model }) {
       <Field label="Búsqueda"><InputText className="tw-h-9" value={filters.search} onChange={event => changeFilter('search', event.target.value)} onKeyDown={event => event.key === 'Enter' && model.onApply(filters)} placeholder="Texto, zona, agente o fecha" /></Field>
       <Button className="tw-h-9" label="Aplicar filtros" size="small" outlined onClick={() => model.onApply(filters)} /><Button className="tw-h-9" label="Limpiar" size="small" text onClick={model.onClear} />
     </div></Card>
-    <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2"><strong>{model.rows.length} zonas</strong><div className="tw-flex tw-flex-wrap tw-gap-2">{model.canExport && <Button className="tw-h-9" label="Descargar reporte" icon="pi pi-download" size="small" outlined onClick={model.onExport} />}{model.canCreate && <Button className="tw-h-9" label="Registrar demora" icon="pi pi-plus" size="small" onClick={() => open('create')} />}</div></div>
-    <Card className="tw-min-w-0 tw-max-w-full tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><DataTable stripedRows value={model.rows} dataKey="id" size="small" className="phase-two-table delay-prime-table" tableClassName="delay-data-table" rowClassName={row => row.needs_review ? 'delay-review-row' : row.is_current ? 'active-delay' : ''} emptyMessage="No hay demoras para los filtros seleccionados" aria-label="Zonas con demora" scrollable>
+    <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2"><strong>{page.total} zonas</strong><div className="tw-flex tw-flex-wrap tw-gap-2">{model.canExport && <Button className="tw-h-9" label="Descargar reporte" icon="pi pi-download" size="small" outlined onClick={model.onExport} />}{model.canCreate && <Button className="tw-h-9" label="Registrar demora" icon="pi pi-plus" size="small" onClick={() => open('create')} />}</div></div>
+    <Card className="tw-min-w-0 tw-max-w-full tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><DataTable stripedRows value={page.items} dataKey="id" size="small" className="phase-two-table delay-prime-table" tableClassName="delay-data-table" rowClassName={row => row.needs_review ? 'delay-review-row' : row.is_current ? 'active-delay' : ''} emptyMessage="No hay demoras para los filtros seleccionados" aria-label="Zonas con demora" scrollable lazy paginator rows={page.limit || 50} first={page.offset} totalRecords={page.total} onPage={event => turnPage(event.rows === page.limit ? event.first : 0, event.rows)}>
       <Column header="Registrada" body={row => formatDate(row.created_at)} /><Column header="Vigencia" body={row => row.status === 'NORMALIZADO' ? <Tag value="Normalizada" severity="secondary" /> : row.needs_review ? <Tag value="Requiere revisión" severity="warning" /> : <><Tag value="Verificada" severity="success" /><small className="delay-close-meta">hasta {formatDate(row.review_due_at)}</small></>} />
       <Column field="service" header="Prestación" /><Column field="department" header="Departamento" /><Column field="zone" header="Zona afectada" /><Column header="Indicación al cliente" body={row => row.message === 'Margen de' && row.minutes ? `Margen de ${row.minutes} minutos` : row.message} /><Column field="agent" header="Registró" /><Column header="Cierre" body={row => row.status === 'NORMALIZADO' ? <>{row.resolution_note || 'Sin detalle'}<small className="delay-close-meta">{row.normalized_by || '—'} · {formatDate(row.normalized_at)}</small></> : '—'} /><Column header="Opciones" body={row => <RowMenu id={`delay-${row.id}`} label={`Opciones de la demora en ${row.zone}`} items={actionItems(row)} />} frozen alignFrozen="right" />
     </DataTable></Card>
@@ -132,32 +159,30 @@ export function NoticesView({ model }) {
   const [filters, setFilters] = useState(model.filters);
   const [appliedFilters, setAppliedFilters] = useState(model.filters);
   const [view, setView] = useState(model.activeView);
-  const [allRows, setAllRows] = useState(model.allRows);
+  const [page, setPage] = useState(model.page);
   const requestSequence = useRef(0);
   const [dialog, setDialog] = useState(null);
   const [form, setForm] = useState(noticeBlank);
   const [events, setEvents] = useState([]);
   const [assignees, setAssignees] = useState([]);
   const [duplicate, setDuplicate] = useState(null);
-  const load = async (nextFilters = appliedFilters, nextView = view) => {
+  const load = async (nextFilters = appliedFilters, nextView = view, nextOffset = 0, nextLimit = page.limit || 50) => {
     const sequence = ++requestSequence.current;
     const query = new URLSearchParams();
-    for (const [name, value] of Object.entries({ date_from: nextFilters.from, date_to: nextFilters.to, status: nextFilters.status, task: nextFilters.task, contact: nextFilters.contact, q: nextFilters.search })) if (value) query.set(name, value);
-    const response = await model.request(`/api/notices?${query}`);
-    if (sequence === requestSequence.current) setAllRows(response);
+    for (const [name, value] of Object.entries({ date_from: nextFilters.from, date_to: nextFilters.to, status: nextFilters.status, task: nextFilters.task, contact: nextFilters.contact, q: nextFilters.search, scope: nextView, offset: nextOffset, limit: nextLimit })) if (value !== '' && value != null) query.set(name, value);
+    const response = await model.request(`/api/notices/page?${query}`);
+    if (response.offset > 0 && response.offset >= response.total) return load(nextFilters, nextView, Math.max(0, Math.floor((response.total - 1) / nextLimit) * nextLimit), nextLimit);
+    if (sequence === requestSequence.current) setPage(response);
     return response;
   };
-  const { toast, busy, run, notify } = useOperation({ ...model, refresh: () => load(appliedFilters, view) });
+  const { toast, busy, run, notify } = useOperation({ ...model, refresh: () => load(appliedFilters, view, page.offset, page.limit) });
   const apply = nextFilters => { setAppliedFilters({ ...nextFilters }); model.onStateChange?.(nextFilters, view); load(nextFilters, view).catch(error => notify('error', 'No se pudieron aplicar los filtros', errorText(error))); };
   const clear = () => { const empty = { from: '', to: '', status: '', task: '', contact: '', search: '' }; setFilters(empty); setAppliedFilters(empty); model.onStateChange?.(empty, view); load(empty, view).catch(error => notify('error', 'No se pudieron limpiar los filtros', errorText(error))); };
-  const selectView = value => { setView(value); model.onStateChange?.(appliedFilters, value); load(appliedFilters, value).catch(error => notify('error', 'No se pudo cambiar la vista', errorText(error))); };
+  const selectView = value => { const next = value === 'resolved' ? { ...appliedFilters, status: '' } : appliedFilters; if (next !== appliedFilters) { setFilters(next); setAppliedFilters(next); } setView(value); model.onStateChange?.(next, value, page.limit); load(next, value).catch(error => notify('error', 'No se pudo cambiar la vista', errorText(error))); };
   const findExisting = row => { const next = { ...appliedFilters, search: row.task_number || row.phone || '' }; setFilters(next); setAppliedFilters(next); setView('open'); model.onStateChange?.(next, 'open'); load(next, 'open').catch(error => notify('error', 'No se pudo buscar el aviso', errorText(error))); };
-  const openRows = allRows.filter(row => !['RESUELTO', 'CANCELADO'].includes(row.status));
-  const unassignedRows = openRows.filter(row => !row.managed_by);
-  const mineRows = openRows.filter(row => row.managed_by === model.currentUser);
-  const waitingRows = openRows.filter(row => row.status === 'ESPERANDO_RESPUESTA');
-  const rows = (view === 'open' ? openRows : view === 'unassigned' ? unassignedRows : view === 'mine' ? mineRows : view === 'waiting' ? waitingRows : allRows).slice().sort(model.sort);
-  const metricCounts = { open: openRows.length, unassigned: unassignedRows.length, mine: mineRows.length, waiting: waitingRows.length };
+  const rows = page.items;
+  const metricCounts = page.counts;
+  const showComments = view === 'resolved';
   const update = (key, value) => { setForm(current => ({ ...current, [key]: value })); if (dialog?.kind === 'create') setDuplicate(null); };
   const close = () => { setDialog(null); setForm(noticeBlank); setEvents([]); setDuplicate(null); };
   const open = (kind, row = null, status = 'RESUELTO') => { setForm({ ...noticeBlank, comments: row?.comments || '', managed_by: row?.managed_by || '', status }); setDialog({ kind, row }); };
@@ -186,43 +211,30 @@ export function NoticesView({ model }) {
     run(() => model.request(`/api/notices/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ status, ...(!row.managed_by && model.canAssign ? { managed_by: model.currentUser } : {}) }) }), `Estado: ${statusNames[status]}`);
   };
   const actions = row => [
+    { label: 'Ver aviso completo', icon: 'pi pi-eye', command: () => open('detail', row) },
     ...(model.canAssign ? [{ label: row.managed_by ? 'Reasignar' : 'Asignar', icon: 'pi pi-user-plus', command: () => assign(row) }] : []),
     ...(model.canComment ? [{ label: 'Editar seguimiento', icon: 'pi pi-pencil', command: () => open('comment', row) }] : []),
     { label: 'Historial', icon: 'pi pi-history', command: () => history(row) }
   ];
-  const statusItems = row => [
+  const statusOptions = [
     ...(model.canChangeStatus ? ['PENDIENTE', 'EN_GESTION', 'ESPERANDO_RESPUESTA'] : []),
     ...(model.canClose ? ['RESUELTO', 'CANCELADO'] : [])
-  ].map(status => ({ label: statusNames[status], command: () => changeStatus(row, status) }));
-  const title = { create: 'Registrar nuevo aviso', comment: 'Editar seguimiento', assign: 'Asignar aviso', close: 'Cerrar aviso', history: 'Historial del aviso' }[dialog?.kind];
+  ].map(status => ({ label: statusNames[status], value: status }));
+  const title = { create: 'Registrar nuevo aviso', comment: 'Editar seguimiento', assign: 'Asignar aviso', close: 'Cerrar aviso', history: 'Historial del aviso', detail: 'Aviso completo' }[dialog?.kind];
   const changeFilter = (key, value) => setFilters(current => ({ ...current, [key]: value }));
   return <div className="operational-view notice-prime-view tw-flex tw-min-w-0 tw-flex-col tw-gap-3 tw-text-[13px]">
     <Toast ref={toast} />
-    <section className="tw-grid tw-grid-cols-1 tw-gap-3 sm:tw-grid-cols-2 xl:tw-grid-cols-4" aria-label="Indicadores de avisos">{model.metrics.map(metric => <Card key={metric.value} className={`notice-prime-metric tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm ${metric.tone} ${view === metric.value ? 'tw-ring-2 tw-ring-blue-200' : ''}`} pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><button type="button" className={`tw-grid tw-w-full tw-gap-1 tw-border-0 tw-border-l-[3px] tw-border-solid tw-bg-transparent tw-p-3 tw-text-left tw-text-[var(--text)] [&>span]:tw-text-xs [&>span]:tw-text-[var(--text-muted)] [&>strong]:tw-text-2xl [&>small]:tw-text-xs [&>small]:tw-text-[var(--text-muted)] ${metric.tone === 'urgent' ? 'tw-border-[var(--color-urgente)]' : metric.tone === 'mine' ? 'tw-border-[var(--color-ok)]' : metric.tone === 'waiting' ? 'tw-border-[var(--color-espera)]' : 'tw-border-slate-400'}`} onClick={() => selectView(metric.value)} aria-pressed={view === metric.value}><span>{metric.label}</span><strong>{metricCounts[metric.value]}</strong><small>{metric.help}</small></button></Card>)}</section>
-    <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2"><strong>{rows.length} avisos</strong><div className="tw-flex tw-flex-wrap tw-gap-2">{model.canExport && <Button className="tw-h-9" label="Descargar esta vista" icon="pi pi-download" size="small" outlined onClick={model.onExport} />}{model.canCreate && <Button className="tw-h-9" label="Nuevo aviso" icon="pi pi-plus" size="small" onClick={() => open('create')} />}</div></div>
+    <section className="tw-grid tw-grid-cols-1 tw-gap-3 sm:tw-grid-cols-2 xl:tw-grid-cols-4" aria-label="Indicadores de avisos">{model.metrics.map(metric => <Card key={metric.value} className={`notice-prime-metric tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm ${metric.tone} ${view === metric.value ? 'tw-ring-2 tw-ring-blue-500 tw-bg-[var(--color-primary-bg)]' : ''}`} pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><button type="button" className={`tw-grid tw-w-full tw-gap-1 tw-border-0 tw-border-l-[3px] tw-border-solid tw-bg-transparent tw-p-3 tw-text-left tw-text-[var(--text)] [&>span]:tw-text-xs [&>span]:tw-text-[var(--text-muted)] [&>strong]:tw-text-2xl [&>small]:tw-text-xs [&>small]:tw-text-[var(--text-muted)] ${metric.tone === 'urgent' ? 'tw-border-[var(--color-urgente)]' : metric.tone === 'mine' ? 'tw-border-[var(--color-ok)]' : metric.tone === 'waiting' ? 'tw-border-[var(--color-espera)]' : 'tw-border-slate-400'}`} onClick={() => selectView(metric.value)} aria-pressed={view === metric.value}><span>{metric.label}</span><strong>{metricCounts[metric.value]}</strong><small>{metric.help}</small></button></Card>)}</section>
+    <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2"><strong>{page.total} avisos</strong><div className="tw-flex tw-flex-wrap tw-gap-2">{model.canExport && <Button className="tw-h-9" label="Descargar esta vista" icon="pi pi-download" size="small" outlined onClick={model.onExport} />}{model.canCreate && <Button className="tw-h-9" label="Nuevo aviso" icon="pi pi-plus" size="small" onClick={() => open('create')} />}</div></div>
     <Card className="tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-3' } }}><div className="tw-flex tw-flex-wrap tw-items-end tw-gap-4"><Field label="Vista"><Dropdown appendTo={document.body} className="tw-h-9" value={view} options={model.viewOptions} onChange={event => selectView(event.value)} /></Field><Field label="Desde"><Calendar appendTo={document.body} className="tw-h-9" value={asDate(filters.from)} onChange={event => changeFilter('from', dateString(event.value))} dateFormat="dd/mm/yy" showIcon /></Field><Field label="Hasta"><Calendar appendTo={document.body} className="tw-h-9" value={asDate(filters.to)} onChange={event => changeFilter('to', dateString(event.value))} dateFormat="dd/mm/yy" showIcon /></Field><Field label="Estado"><Dropdown appendTo={document.body} className="tw-h-9" value={filters.status} options={model.statusOptions} onChange={event => changeFilter('status', event.value)} /></Field><Field label="Tarea"><InputText className="tw-h-9" value={filters.task} onChange={event => changeFilter('task', event.target.value)} onKeyDown={event => event.key === 'Enter' && apply(filters)} /></Field><Field label="Teléfono o contacto"><InputText className="tw-h-9" value={filters.contact} onChange={event => changeFilter('contact', event.target.value)} onKeyDown={event => event.key === 'Enter' && apply(filters)} /></Field><Field label="Búsqueda"><InputText className="tw-h-9" value={filters.search} onChange={event => changeFilter('search', event.target.value)} onKeyDown={event => event.key === 'Enter' && apply(filters)} /></Field><Button className="tw-h-9" label="Aplicar filtros" size="small" outlined onClick={() => apply(filters)} /><Button className="tw-h-9" label="Limpiar" size="small" text onClick={clear} /></div></Card>
-    <Card className="notice-prime-table-card tw-min-w-0 tw-max-w-full tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><DataTable stripedRows value={rows} dataKey="id" size="small" className="notice-prime-table" tableClassName="notice-table" emptyMessage="No hay avisos para esos filtros" aria-label="Avisos del equipo" rowClassName={row => `${row.status === 'PENDIENTE' ? 'priority ' : ''}${!row.managed_by && !['RESUELTO', 'CANCELADO'].includes(row.status) ? 'notice-unassigned ' : ''}${row.managed_by === model.currentUser ? 'notice-own ' : ''}${row.status === 'ESPERANDO_RESPUESTA' ? 'notice-waiting' : ''}`}>
-      <Column header="Fecha" style={{ minWidth: '160px', width: '160px' }} className="tw-whitespace-nowrap" body={row => <span className="tw-whitespace-nowrap">{formatDate(row.created_at)}</span>} />
-      <Column header="Antigüedad" style={{ minWidth: '120px', width: '120px' }} className="tw-whitespace-nowrap" body={row => model.age(row)} />
-      <Column header="Tarea" style={{ minWidth: '120px', width: '120px' }} className="tw-whitespace-nowrap" body={row => row.task_number ? <a href={`https://aps.portoservicios.uy/3/tareas/${encodeURIComponent(row.task_number)}`} target="_blank" rel="noopener noreferrer">{row.task_number}</a> : 'Sin tarea'} />
-      <Column field="phone" header="Teléfono" className="tw-whitespace-nowrap" />
-      <Column field="notice_type" header="Motivo" className="notice-text-column" />
-      <Column field="audience" header="Para" />
-      <Column field="detail" header="Detalle" className="notice-text-column notice-detail-column" style={{ minWidth: '250px', whiteSpace: 'normal', wordWrap: 'break-word' }} />
-      <Column field="communicated_by" header="Dio aviso" />
-      <Column header="Responsable" className="notice-owner-column" body={row =>
-        <div className="tw-flex tw-flex-col tw-items-start tw-justify-center tw-gap-1 tw-w-full tw-min-w-0 tw-whitespace-normal tw-break-words">
-          <span>{row.managed_by || 'Sin responsable'}</span>
-          {!row.managed_by && model.canAssign && <Button className="tw-h-auto tw-min-h-9 tw-max-w-full tw-whitespace-normal tw-break-words tw-text-left tw-px-0" label="Asignarme" size="small" text onClick={() => run(() => model.request(`/api/notices/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ managed_by: model.currentUser }) }), 'Aviso asignado')} />}
-        </div>
-      } />
-      <Column header="Estado" className="notice-status-column" body={row =>
-        <div className="tw-flex tw-items-center tw-gap-2">
-          {statusItems(row).length ? <RowMenu id={`notice-status-${row.id}`} label={`Cambiar estado de aviso ${row.id}: ${statusNames[row.status] || row.status}`} items={statusItems(row)} text={statusNames[row.status] || row.status} /> : <Tag value={statusNames[row.status] || row.status} />}
-        </div>
-      } />
-      <Column field="comments" header="Comentario" className="notice-text-column notice-comment-column" style={{ minWidth: '250px', whiteSpace: 'normal', wordWrap: 'break-word' }} />
-      <Column header="Opciones" className="notice-options-column" body={row => <RowMenu id={`notice-actions-${row.id}`} label={`Opciones del aviso ${row.task_number || row.id}`} items={actions(row)} />} />
+    <Card className="notice-prime-table-card tw-min-w-0 tw-max-w-full tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><DataTable stripedRows value={rows} dataKey="id" size="small" className={`notice-prime-table tw-min-w-0 [&_.p-datatable-wrapper]:tw-overflow-x-hidden max-sm:[&_.p-datatable-thead]:tw-hidden max-sm:[&_.p-datatable-tbody>tr]:tw-grid max-sm:[&_.p-datatable-tbody>tr]:tw-grid-cols-2 max-sm:[&_.p-datatable-tbody>tr>td]:tw-w-full max-sm:[&_.p-datatable-tbody>tr>td:nth-child(3)]:tw-col-span-2 ${showComments ? 'max-sm:[&_.p-datatable-tbody>tr>td:nth-child(6)]:tw-col-span-2 max-sm:[&_.p-datatable-tbody>tr>td:nth-child(7)]:tw-col-span-2' : 'max-sm:[&_.p-datatable-tbody>tr>td:nth-child(6)]:tw-col-span-2'}`} tableClassName="notice-table tw-table-fixed tw-w-full" emptyMessage="No hay avisos para esos filtros" aria-label="Avisos del equipo" lazy paginator rows={page.limit || 50} first={page.offset} totalRecords={page.total} onPage={event => { const offset = event.rows === page.limit ? event.first : 0; model.onStateChange?.(appliedFilters, view, event.rows); load(appliedFilters, view, offset, event.rows).catch(error => notify('error', 'No se pudo cambiar de página', errorText(error))); }} onRowClick={event => open('detail', event.data)} rowClassName={() => 'tw-cursor-pointer'}>
+      <Column header="Tiempo" style={{ width: showComments ? '11%' : '13%' }} body={row => <div className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1"><span className="tw-whitespace-nowrap">{formatNoticeTime(row.created_at)}</span><span className="tw-text-xs tw-text-slate-500">Hace {model.age(row).replace(/\s+/g, '')}</span></div>} />
+      <Column header="Tarea" style={{ width: showComments ? '13%' : '15%' }} body={row => <div className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1 tw-break-words">{row.task_number ? <a className="tw-font-semibold tw-text-blue-600 tw-break-words" href={`https://aps.portoservicios.uy/3/tareas/${encodeURIComponent(row.task_number)}`} target="_blank" rel="noopener noreferrer" onClick={event => event.stopPropagation()}>{row.task_number}</a> : <span>Sin tarea</span>}<span className="tw-text-xs tw-break-words">{row.phone || 'Sin teléfono'}</span></div>} />
+      <Column header="Motivo y resumen" style={{ width: showComments ? '24%' : '32%' }} body={row => <div className="tw-flex tw-w-full tw-min-w-0 tw-flex-col tw-gap-1"><strong className="tw-whitespace-normal tw-break-words tw-font-semibold">{row.notice_type}</strong><span className="tw-block tw-w-full tw-min-w-0 tw-truncate tw-text-slate-500" title={row.detail}>{row.detail}</span></div>} />
+      <Column header="Responsable" style={{ width: showComments ? '15%' : '18%' }} body={row => <div className="tw-flex tw-flex-col tw-items-start tw-justify-center tw-gap-1 tw-w-full tw-min-w-0 tw-whitespace-normal tw-break-words">{row.managed_by ? <span className="tw-font-medium tw-whitespace-normal tw-break-words">{row.managed_by}</span> : model.canAssign && !noticeIsClosed(row) ? <Button className="tw-h-9 tw-whitespace-nowrap tw-max-w-full" label="Asignarme" size="small" onClick={event => { event.stopPropagation(); run(() => model.request(`/api/notices/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ managed_by: model.currentUser }) }), 'Aviso asignado'); }} /> : <span className="tw-text-slate-500">Sin responsable</span>}</div>} />
+      <Column header="Estado" style={{ width: showComments ? '14%' : '15%' }} body={row => <div onClick={event => event.stopPropagation()}>{statusOptions.length ? <Dropdown appendTo={document.body} className="tw-w-full tw-min-w-0" aria-label={`Estado del aviso ${row.task_number || row.id}`} value={row.status} options={statusOptions} onChange={event => changeStatus(row, event.value)} valueTemplate={() => <Tag value={noticeState(row).label} severity={noticeState(row).severity} className="tw-whitespace-normal tw-text-center tw-text-xs" />} itemTemplate={option => <Tag value={option.label} severity={noticeStatusDisplay[option.value]?.severity || 'secondary'} className="tw-text-xs" />} /> : <Tag value={noticeState(row).label} severity={noticeState(row).severity} className="tw-whitespace-normal tw-text-center tw-text-xs" />}</div>} />
+      {showComments && <Column header="Comentarios" style={{ width: '16%' }} body={row => <span className="tw-whitespace-normal tw-break-words">{row.comments || 'Sin comentario de cierre'}</span>} />}
+      <Column header="Acciones" style={{ width: '7%' }} body={row => <div onClick={event => event.stopPropagation()}><RowMenu id={`notice-actions-${row.id}`} label={`Acciones del aviso ${row.task_number || row.id}`} items={actions(row)} /></div>} />
     </DataTable></Card>
     <Dialog header={title} visible={Boolean(dialog)} onHide={close} modal appendTo={document.body} style={{ width: 'min(640px, 95vw)' }}><form onSubmit={save} className="tw-flex tw-flex-col tw-gap-4">
       {dialog?.kind === 'create' && <div className="tw-grid tw-grid-cols-1 tw-gap-3 md:tw-grid-cols-2"><Field label="Número de tarea"><InputText className="tw-h-9" value={form.task_number} onChange={event => update('task_number', event.target.value)} maxLength={120} /></Field><Field label="Teléfono del cliente"><InputText className="tw-h-9" value={form.phone} onChange={event => update('phone', event.target.value)} maxLength={80} /></Field><Field label="Motivo"><Dropdown appendTo={document.body} className="tw-h-9" value={form.notice_type} options={options(noticeTypes)} onChange={event => { update('notice_type', event.value); setDuplicate(null); }} placeholder="Seleccionar motivo" /></Field><Field label="Dirigido a"><Dropdown appendTo={document.body} className="tw-h-9" value={form.audience} options={[{ label: 'Todo el equipo', value: 'TODOS' }, { label: 'Telefonistas', value: 'TELEFONISTAS' }, { label: 'Planificadores', value: 'PLANIFICADORES' }]} onChange={event => update('audience', event.value)} /></Field><Field label="¿Qué necesita saber o hacer el equipo?" wide><InputTextarea value={form.detail} onChange={event => update('detail', event.target.value)} rows={6} maxLength={4000} required /></Field>{model.canAssign && <label className="tw-flex tw-items-center tw-gap-2"><input type="checkbox" checked={Boolean(form.managed_by)} onChange={event => update('managed_by', event.target.checked)} />Asignármelo al guardar</label>}</div>}
@@ -231,7 +243,8 @@ export function NoticesView({ model }) {
       {dialog?.kind === 'assign' && <Field label="Responsable"><Dropdown appendTo={document.body} className="tw-h-9" value={form.managed_by} options={[{ label: 'Sin responsable', value: '' }, ...assignees.map(person => ({ label: `${person.display_name} · ${person.role_name}`, value: person.display_name }))]} onChange={event => update('managed_by', event.value)} filter /></Field>}
       {dialog?.kind === 'close' && <><Field label="Resultado"><Dropdown appendTo={document.body} className="tw-h-9" value={form.status} options={[{ label: 'Resuelto', value: 'RESUELTO' }, { label: 'Cancelado', value: 'CANCELADO' }]} onChange={event => update('status', event.value)} /></Field><Field label="Resultado o motivo del cierre"><InputTextarea value={form.comments || ''} onChange={event => update('comments', event.target.value)} rows={6} maxLength={4000} required /></Field></>}
       {dialog?.kind === 'history' && <div className="notice-timeline">{events.length ? events.map((entry, index) => <article key={entry.id || index}><strong>{entry.event_type}</strong><time>{formatDate(entry.created_at)}</time><span>{entry.actor}</span>{entry.comment && <p>{entry.comment}</p>}{entry.detail && <small>{entry.detail}</small>}</article>) : <p>No hay movimientos registrados.</p>}</div>}
-      <div className="tw-flex tw-justify-end tw-gap-2"><Button className="tw-h-9" type="button" label={dialog?.kind === 'history' ? 'Cerrar' : 'Cancelar'} text onClick={close} disabled={busy} />{dialog?.kind !== 'history' && <Button className="tw-h-9" type="submit" label={busy ? 'Guardando…' : 'Guardar'} loading={busy} disabled={busy} />}</div>
+      {dialog?.kind === 'detail' && <div className="tw-grid tw-min-w-0 tw-gap-3 tw-text-[13px]"><div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3"><Tag value={noticeState(dialog.row).label} severity={noticeState(dialog.row).severity} /><strong>{dialog.row.notice_type}</strong></div><div className="tw-grid tw-grid-cols-1 tw-gap-3 sm:tw-grid-cols-2">{[['Registrado', formatDate(dialog.row.created_at)], ['Tarea', dialog.row.task_number || 'Sin tarea'], ['Teléfono', dialog.row.phone || 'Sin teléfono'], ['Responsable', dialog.row.managed_by || 'Sin responsable'], ['Destinatario', dialog.row.audience || '—'], ['Dio aviso', dialog.row.communicated_by || '—']].map(([label, value]) => <div key={label} className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1"><span className="tw-text-xs tw-text-slate-500">{label}</span><span className="tw-whitespace-normal tw-break-words">{value}</span></div>)}</div><div className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1"><span className="tw-text-xs tw-text-slate-500">Detalle completo</span><p className="tw-m-0 tw-whitespace-pre-wrap tw-break-words">{dialog.row.detail || '—'}</p></div><div className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1"><span className="tw-text-xs tw-text-slate-500">Comentarios</span><p className="tw-m-0 tw-whitespace-pre-wrap tw-break-words">{dialog.row.comments || 'Sin comentarios'}</p></div></div>}
+      <div className="tw-flex tw-justify-end tw-gap-2"><Button className="tw-h-9" type="button" label={['history', 'detail'].includes(dialog?.kind) ? 'Cerrar' : 'Cancelar'} text onClick={close} disabled={busy} />{!['history', 'detail'].includes(dialog?.kind) && <Button className="tw-h-9" type="submit" label={busy ? 'Guardando…' : 'Guardar'} loading={busy} disabled={busy} />}</div>
     </form></Dialog>
   </div>;
 }

@@ -647,6 +647,42 @@ class Handler(SimpleHTTPRequestHandler):
                     FROM users u JOIN roles r ON r.id=u.role_id
                     JOIN role_permissions rp ON rp.role_id=r.id AND rp.permission='notices.view'
                     WHERE u.active=1 ORDER BY u.display_name"""))
+        if path=="/api/notices/page":
+            actor=self.require("notices.view")
+            if not actor:return
+            def value(name):return str(params.get(name,[""])[0]).strip()
+            try:
+                offset=int(value("offset") or 0);limit=int(value("limit") or 50)
+                if limit not in {50,100,150,200} or offset<0 or offset%limit:raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
+                scope=value("scope") or "open"
+                if scope not in {"open","unassigned","mine","waiting","resolved","all"}:raise ValueError("Vista de avisos no válida")
+                for field in ("date_from","date_to"):
+                    if value(field):date.fromisoformat(value(field))
+            except ValueError as error:return self.send_json({"detail":str(error)},422)
+            conditions=[];values=[]
+            if value("date_from"):conditions.append("date(created_at, '-3 hours')>=?");values.append(value("date_from"))
+            if value("date_to"):conditions.append("date(created_at, '-3 hours')<=?");values.append(value("date_to"))
+            if value("status"):conditions.append("status=?");values.append(value("status"))
+            for field,column in (("task","task_number"),("contact","phone")):
+                if value(field):conditions.append(f"instr(lower(coalesce({column},'')),lower(?))>0");values.append(value(field))
+            if value("q"):
+                conditions.append("instr(lower(coalesce(task_number,'')||' '||coalesce(phone,'')||' '||coalesce(notice_type,'')||' '||coalesce(detail,'')||' '||coalesce(managed_by,'')||' '||coalesce(communicated_by,'')||' '||coalesce(comments,'')),lower(?))>0")
+                values.append(value("q"))
+            base=" AND ".join(conditions) or "1=1"
+            chosen=list(conditions);chosen_values=list(values)
+            if scope not in {"all","resolved"}:chosen.append("status NOT IN ('RESUELTO','CANCELADO')")
+            if scope=="resolved":chosen.append("status='RESUELTO'")
+            if scope=="unassigned":chosen.append("trim(coalesce(managed_by,''))=''")
+            elif scope=="mine":chosen.append("managed_by=?");chosen_values.append(actor["display_name"])
+            elif scope=="waiting":chosen.append("status='ESPERANDO_RESPUESTA'")
+            where=" AND ".join(chosen) or "1=1"
+            order="created_at DESC,id DESC" if scope in {"all","resolved"} else "CASE WHEN trim(coalesce(managed_by,''))='' THEN 0 WHEN status='PENDIENTE' THEN 1 WHEN managed_by=? THEN 2 WHEN status='EN_GESTION' THEN 3 ELSE 4 END,created_at ASC,id ASC"
+            order_values=[] if scope in {"all","resolved"} else [actor["display_name"]]
+            with connect() as db:
+                counts=db.execute(f"SELECT sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') THEN 1 ELSE 0 END) open,sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') AND trim(coalesce(managed_by,''))='' THEN 1 ELSE 0 END) unassigned,sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') AND managed_by=? THEN 1 ELSE 0 END) mine,sum(CASE WHEN status='ESPERANDO_RESPUESTA' THEN 1 ELSE 0 END) waiting FROM notices WHERE {base}",[actor["display_name"],*values]).fetchone()
+                total=db.execute(f"SELECT count(*) total FROM notices WHERE {where}",chosen_values).fetchone()["total"]
+                items=rows(db,f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",[*chosen_values,*order_values,limit,offset])
+            return self.send_json({"items":items,"total":total,"limit":limit,"offset":offset,"counts":{key:counts[key] or 0 for key in ("open","unassigned","mine","waiting")}})
         if path in ("/api/notices","/api/reports/notices.csv"):
             permission="reports.export" if path.startswith("/api/reports/") else "notices.view"
             actor=self.require(permission)
@@ -660,13 +696,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(result)
         if path=="/api/quotes/history":
             if not self.require("quotes.view"):return
-            def value(name):return str(params.get(name,[""])[0]).strip()
-            try:
-                limit=max(1,min(100,int(value("limit") or 50)));offset=max(0,int(value("offset") or 0))
-            except (TypeError,ValueError):return self.send_json({"detail":"La paginación indicada no es válida"},400)
             with connect() as db:
                 result=filtered_operational_records(db,"quotes",params)
-            return self.send_json({"items":result[offset:offset+limit],"total":len(result),"limit":limit,"offset":offset})
+            return self.send_json(result)
         report_paths={"/api/reports/delays.csv":("delays","delay_zones","created_at",["service","department","zone","message","agent"],"demoras"),"/api/reports/transfers.csv":("transfers","scheduled_transfers","scheduled_date",["task_number","transfer_type","origin","destination","provider","responsible","planner","comments"],"programados"),"/api/reports/quotes.csv":("quotes","quotes","created_at",["task_number","origin_input","destination_input","mobile_input","created_by"],"cotizaciones"),"/api/reports/audit.csv":("audit","audit_events","created_at",["entity","action","actor","detail"],"auditoria")}
         if path in report_paths:
             if report_paths[path][0]=="audit" and not self.require("audit.view"):return

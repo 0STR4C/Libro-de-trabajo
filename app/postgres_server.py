@@ -1074,6 +1074,8 @@ def users(request: Request):
         return rows(database, "SELECT u.id,u.username,u.email,(u.google_sub IS NOT NULL) google_linked,u.display_name,u.active,u.role_id,r.name role_name FROM users u JOIN roles r ON r.id=u.role_id ORDER BY u.display_name")
 
 
+
+
 @app.post("/api/settings/users", status_code=201)
 def create_user(request: Request, data: UserCreateIn = Body(...)):
     data = data.model_dump()
@@ -1160,7 +1162,17 @@ def schedules(request: Request, week: str = "", date_from: str = "", date_to: st
     except ValueError as exc:
         raise HTTPException(400, "El período indicado no es válido") from exc
     with connect() as database:
-        return filtered_schedules(database,week,date_from,date_to,employee_id,role,q)
+        return complete_schedules(database,{"week":week,"date_from":date_from,"date_to":date_to,"employee_id":employee_id,"role":role,"q":q})
+
+
+def complete_schedules(database, filters):
+    """Devuelve toda la foto del equipo en el rango elegido, incluidas revisiones WFM."""
+    from .wfm import _published_schedules
+    parameters={key:str(value) for key,value in filters.items() if value not in (None,"")}
+    def query(sql,args=()): return database.execute(sql.replace('?', '%s'),args)
+    return _published_schedules(query,parameters,True)
+
+
 
 @app.get("/api/reports/schedules.csv")
 def schedules_report(request: Request, week: str = "", date_from: str = "", date_to: str = "", employee_id: int | None = None, role: str = "", q: str = ""):
@@ -1517,6 +1529,137 @@ def filtered_notices(database, date_from="", date_to="", status="", task="", con
     return rows(database, query, values)
 
 
+NOTICE_PAGE_SIZE = 50
+NOTICE_PAGE_SIZES = {50, 100, 150, 200}
+
+
+def paged_notices(database, filters, managed_by, offset=0, limit=NOTICE_PAGE_SIZE):
+    """Filtra y cuenta en PostgreSQL; nunca materializa el conjunto completo."""
+    if limit not in NOTICE_PAGE_SIZES or offset < 0 or offset % limit:
+        raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
+    conditions = []
+    values = []
+    local_date = "(created_at AT TIME ZONE 'America/Montevideo')::date"
+    for key, operator in (("date_from", ">="), ("date_to", "<=")):
+        if filters.get(key):
+            conditions.append(f"{local_date} {operator} %s::date")
+            values.append(filters[key])
+    if filters.get("status"):
+        conditions.append("status = %s")
+        values.append(filters["status"])
+    for key, column in (("task", "task_number"), ("contact", "phone")):
+        if filters.get(key):
+            conditions.append(f"STRPOS(LOWER(COALESCE({column},'')), LOWER(%s)) > 0")
+            values.append(filters[key])
+    if filters.get("q"):
+        conditions.append("STRPOS(LOWER(CONCAT_WS(' ', task_number,phone,notice_type,detail,managed_by,communicated_by,comments)), LOWER(%s)) > 0")
+        values.append(filters["q"])
+    base_where = " AND ".join(conditions) or "TRUE"
+    metrics = database.execute(f"""SELECT
+        COUNT(*) FILTER (WHERE status NOT IN ('RESUELTO','CANCELADO')) AS open,
+        COUNT(*) FILTER (WHERE status NOT IN ('RESUELTO','CANCELADO') AND COALESCE(BTRIM(managed_by),'')='') AS unassigned,
+        COUNT(*) FILTER (WHERE status NOT IN ('RESUELTO','CANCELADO') AND managed_by=%s) AS mine,
+        COUNT(*) FILTER (WHERE status='ESPERANDO_RESPUESTA') AS waiting
+        FROM notices WHERE {base_where}""", (managed_by, *values)).fetchone()
+    scope = filters.get("scope") or "open"
+    if scope not in {"open", "unassigned", "mine", "waiting", "resolved", "all"}:
+        raise ValueError("Vista de avisos no válida")
+    selected = list(conditions)
+    selected_values = list(values)
+    if scope not in {"all", "resolved"}:
+        selected.append("status NOT IN ('RESUELTO','CANCELADO')")
+    if scope == "resolved":
+        selected.append("status='RESUELTO'")
+    if scope == "unassigned":
+        selected.append("COALESCE(BTRIM(managed_by),'')=''")
+    elif scope == "mine":
+        selected.append("managed_by=%s")
+        selected_values.append(managed_by)
+    elif scope == "waiting":
+        selected.append("status='ESPERANDO_RESPUESTA'")
+    where = " AND ".join(selected) or "TRUE"
+    total = database.execute(f"SELECT COUNT(*) AS total FROM notices WHERE {where}", selected_values).fetchone()["total"]
+    order = "created_at DESC, id DESC" if scope in {"all", "resolved"} else "CASE WHEN COALESCE(BTRIM(managed_by),'')='' THEN 0 WHEN status='PENDIENTE' THEN 1 WHEN managed_by=%s THEN 2 WHEN status='EN_GESTION' THEN 3 ELSE 4 END, created_at ASC, id ASC"
+    order_values = [] if scope in {"all", "resolved"} else [managed_by]
+    items = rows(database, f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", (*selected_values, *order_values, limit, offset))
+    return {"items": items, "total": total, "limit": limit, "offset": offset, "counts": dict(metrics)}
+
+
+def paged_operational_records(database, kind, filters, offset=0, limit=NOTICE_PAGE_SIZE):
+    """Página acotada de registros filtrada en SQL, sin cargar la tabla completa."""
+    if kind not in {"delays", "audit"}:
+        raise ValueError("Listado no válido")
+    if limit not in NOTICE_PAGE_SIZES or offset < 0 or offset % limit:
+        raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
+    table = {"delays": "delay_zones", "audit": "audit_events"}[kind]
+    date_field = "(created_at AT TIME ZONE 'America/Montevideo')::date"
+    conditions, values = [], []
+    for name, operator in (("date_from", ">="), ("date_to", "<=")):
+        if filters.get(name):
+            date.fromisoformat(filters[name])
+            conditions.append(f"{date_field} {operator} %s::date")
+            values.append(filters[name])
+    if kind == "delays":
+        deadline = "COALESCE(expires_at,last_verified_at + interval '120 minutes',created_at + interval '120 minutes')"
+        scope = filters.get("scope") or ""
+        if scope == "current": conditions.append(f"status='VIGENTE' AND {deadline}>CURRENT_TIMESTAMP")
+        elif scope == "review": conditions.append(f"status='VIGENTE' AND {deadline}<=CURRENT_TIMESTAMP")
+        elif scope == "normalized": conditions.append("status='NORMALIZADO'")
+        elif scope not in {"", "all"}: raise ValueError("Vista de demoras no válida")
+        if filters.get("status"):
+            conditions.append("status=%s"); values.append(filters["status"])
+        for name in ("department", "service"):
+            if filters.get(name):
+                conditions.append(f"LOWER({name})=LOWER(%s)"); values.append(filters[name])
+        search = "CONCAT_WS(' ',service,department,zone,message,agent,normalized_by,resolution_note,created_at::text,normalized_at::text)"
+        order = "created_at DESC,id DESC"
+    else:
+        for name, column in (("entity", "entity"), ("entity_id", "entity_id"), ("action", "action"), ("actor_id", "actor_id")):
+            if filters.get(name):
+                if name in {"entity_id", "actor_id"}:
+                    try: value = int(filters[name])
+                    except ValueError as error: raise ValueError(f"{name} debe ser numérico") from error
+                else: value = filters[name]
+                conditions.append(f"{column}=%s"); values.append(value)
+        search = "CONCAT_WS(' ',entity,action,actor,actor_name,detail)"
+        order = "created_at DESC,id DESC"
+    if filters.get("q"):
+        conditions.append(f"STRPOS(LOWER({search}),LOWER(%s))>0"); values.append(filters["q"])
+    where = " AND ".join(conditions) or "TRUE"
+    total = database.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", values).fetchone()["total"]
+    items = rows(database, f"SELECT * FROM {table} WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", (*values, limit, offset))
+    if kind == "delays": items = [enrich_delay(item) for item in items]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def operational_page(kind: str, request: Request, offset: int = 0, limit: int = NOTICE_PAGE_SIZE, date_from: str = "", date_to: str = "", status: str = "", scope: str = "", department: str = "", service: str = "", entity: str = "", entity_id: str = "", action: str = "", actor_id: str = "", q: str = ""):
+    required = {"delays": "delays.view", "audit": "audit.view"}
+    if kind not in required: raise HTTPException(404, "Listado inexistente")
+    authorized(request, required[kind])
+    filters = {"date_from": date_from, "date_to": date_to, "status": status, "scope": scope, "department": department, "service": service, "entity": entity, "entity_id": entity_id, "action": action, "actor_id": actor_id, "q": q}
+    try:
+        with connect() as database: return paged_operational_records(database, kind, filters, offset, limit)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@app.get("/api/notices/page")
+def notices_page(request: Request, date_from: str = "", date_to: str = "", status: str = "", task: str = "", contact: str = "", q: str = "", scope: str = "open", offset: int = 0, limit: int = NOTICE_PAGE_SIZE):
+    actor = authorized(request, "notices.view")
+    filters = {"date_from": date_from, "date_to": date_to, "status": status, "task": task, "contact": contact, "q": q, "scope": scope}
+    try:
+        for value in (date_from, date_to):
+            if value:
+                date.fromisoformat(value)
+        with connect() as database:
+            return paged_notices(database, filters, actor["display_name"], offset, limit)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+app.add_api_route("/api/{kind}/page", operational_page, methods=["GET"])
+
+
 @app.get("/api/notices")
 def notices(request: Request, date_from: str = "", date_to: str = "", status: str = "", task: str = "", contact: str = "", q: str = "", scope: str = "", managed_by: str = ""):
     actor=authorized(request, "notices.view")
@@ -1563,13 +1706,13 @@ def notices_report(request: Request, date_from: str = "", date_to: str = "", sta
 
 
 @app.get("/api/quotes/history")
-def quote_history(request: Request, q: str = "", coverage: str = "", mode: str = "", created_by: str = "", date_from: str = "", date_to: str = "", limit: int = 50, offset: int = 0):
+def quote_history(request: Request, q: str = "", coverage: str = "", mode: str = "", created_by: str = "", date_from: str = "", date_to: str = ""):
     authorized(request, "quotes.view")
-    limit=max(1,min(int(limit),100));offset=max(0,int(offset))
     filters={"q":q,"coverage":coverage,"mode":mode,"created_by":created_by,"date_from":date_from,"date_to":date_to}
-    with connect() as database:
-        result=filtered_operational_records(database,"quotes",filters)
-    return {"items":result[offset:offset+limit],"total":len(result),"limit":limit,"offset":offset}
+    try:
+        with connect() as database: return filtered_operational_records(database,"quotes",filters)
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from error
 
 
 def filtered_report_rows(database, kind, date_from="", date_to="", status="", task="", department="", service="", provider="", responsible="", transfer_type="", created_by="", q=""):

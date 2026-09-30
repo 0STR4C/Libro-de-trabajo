@@ -62,17 +62,34 @@ Los agentes de cualquier área que modifiquen una interfaz deben consultar ese
 punto de entrada, verificar la pertinencia de sus recomendaciones y preservar
 la identidad azul corporativa, los contratos HTTP y los permisos existentes.
 
-Las diez rutas operativas montan vistas React desde `frontend/main.jsx`. Vite
-integra React 18, PrimeReact 10, PrimeIcons y Tailwind CSS 3 y genera recursos
-bajo `app/static/frontend/`. El enrutador, la navegación lateral, el encabezado
-y el selector de tema aún viven en `app/static/app.js` e `index.html`; por eso
-la aplicación completa todavía no es 100 % React. El inicio de sesión ya usa
-una pantalla completa React. `legacy_archive/wfm.js` conserva una implementación histórica
+Las rutas operativas y de Supervisión se montan desde `frontend/main.jsx`.
+`frontend/app-shell.jsx` controla autenticación, navegación, encabezado, tema y
+modelos de las vistas. El cambio de módulo conserva los componentes React
+montados y no ejecuta el enrutador histórico `app/static/app.js`, que permanece
+solo como referencia de compatibilidad. `app/static/index.html` es un punto de
+montaje mínimo. Vite integra React 18, PrimeReact 10, PrimeIcons y Tailwind CSS 3
+y genera recursos bajo `app/static/frontend/`. El inicio de sesión usa una
+pantalla completa React. `legacy_archive/wfm.js` conserva una implementación histórica
 utilizada por herramientas de prueba, pero no se carga en el runtime. Tailwind
 usa prefijo `tw-`, `important: true` y mantiene Preflight desactivado; sus
 utilidades también alcanzan los portales montados en `document.body`.
 El Dockerfile compila estos recursos en una etapa Node y copia
 solo su salida a la imagen Python final. El archivo histórico no forma parte de la imagen ni de los recursos públicos.
+
+Solo Avisos, Zonas con demora, Auditoría histórica de demoras y Auditoría
+general usan páginas PostgreSQL de 50 filas. Sus respuestas incluyen `items`,
+`total`, `limit` y `offset`. Horarios devuelve la lista completa del rango
+seleccionado: fusiona proyecciones WFM, revisiones publicadas anteriores a la
+proyección y registros históricos. Planificación WFM, solicitudes, Programados,
+Cotizador y los listados de Configuración no se paginan. Los cambios de pestaña
+y día muestran inmediatamente la selección y un estado de carga React mientras
+se obtiene el contenido.
+
+El shell React separa navegación operativa de Supervisión. Resumen presenta el
+mapa de demoras y alertas; las métricas están en Dashboard de Supervisión.
+Auditoría de demoras permite consultar el alta, la normalización, sus autores
+y el registro de eventos históricos. El Cotizador ordena explícitamente base
+de salida, origen y destino, y agrupa kilómetros e importes en el resultado.
 
 ### Directiva Global de Diseño UI/UX y Sistema de Componentes
 
@@ -201,6 +218,14 @@ nuevamente por cambiar de computadora ni restaurar pruebas sobre la base activa.
   no modificar eventos históricos desde la interfaz.
 
 ## Desarrollo y comprobación
+
+Las entregas de servidor conservan el perfil `sistemas-20260925`, incorporado
+desde el ZIP revisado por Sistemas: `APP_PORT` configurable con 8000 interno,
+identidad Compose estable, logs json-file limitados a 10 MB × 3 por servicio,
+init y no-new-privileges para app, 60 s de margen inicial de salud y espera de
+arranque de 240 s. El empaquetador verifica su presencia antes de generar el ZIP.
+Las plantillas no sustituyen el `.env` ni el nombre de proyecto del servidor.
+Procedimiento y comprobación de puertos en `tools/deployment/README.md`.
 
 Revisar cambios existentes antes de editar. Frontend: únicamente Vite y sintaxis
 JS/JSX en Docker; comandos en `tools/frontend_build/README.md`. Backend: pruebas

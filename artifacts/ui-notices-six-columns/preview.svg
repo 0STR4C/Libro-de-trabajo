@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="420" viewBox="0 0 1240 420" role="img" aria-labelledby="title desc">
+  <title id="title">Vista esquemática de la tabla de Avisos de seis columnas</title>
+  <desc id="desc">Ejemplo con datos sintéticos. Tiempo, Tarea, Motivo y resumen, Responsable, Estado y Acciones.</desc>
+  <rect width="1240" height="420" fill="#f8fafc"/>
+  <text x="30" y="39" fill="#0f172a" font-family="Arial,sans-serif" font-size="23" font-weight="700">Avisos del equipo</text>
+  <g font-family="Arial,sans-serif">
+    <rect x="30" y="60" width="280" height="77" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <rect x="30" y="60" width="4" height="77" fill="#cf1322"/>
+    <text x="47" y="84" fill="#64748b" font-size="11" font-weight="700">SIN RESPONSABLE</text>
+    <text x="47" y="119" fill="#cf1322" font-size="29" font-weight="700">1</text>
+    <rect x="324" y="60" width="280" height="77" rx="8" fill="#fff" stroke="#2563eb"/>
+    <rect x="324" y="60" width="4" height="77" fill="#2563eb"/>
+    <text x="341" y="84" fill="#64748b" font-size="11" font-weight="700">ASIGNADOS A MÍ</text>
+    <text x="341" y="119" fill="#2563eb" font-size="29" font-weight="700">1</text>
+    <rect x="618" y="60" width="280" height="77" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <rect x="618" y="60" width="4" height="77" fill="#a35f00"/>
+    <text x="635" y="84" fill="#64748b" font-size="11" font-weight="700">EN ESPERA</text>
+    <text x="635" y="119" fill="#a35f00" font-size="29" font-weight="700">0</text>
+    <rect x="912" y="60" width="298" height="77" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <text x="929" y="84" fill="#64748b" font-size="11" font-weight="700">VISTA ACTUAL</text>
+    <text x="929" y="115" fill="#0f172a" font-size="17" font-weight="600">Activos · 2 avisos</text>
+    <rect x="30" y="160" width="1180" height="223" rx="8" fill="#fff" stroke="#cbd5e1"/>
+    <rect x="31" y="161" width="1178" height="42" fill="#f1f5f9"/>
+    <g fill="#475569" font-size="11" font-weight="700">
+      <text x="46" y="187">TIEMPO</text><text x="188" y="187">TAREA</text><text x="355" y="187">MOTIVO Y RESUMEN</text><text x="756" y="187">RESPONSABLE</text><text x="971" y="187">ESTADO</text><text x="1131" y="187">ACCIONES</text>
+    </g>
+    <line x1="31" x2="1209" y1="203" y2="203" stroke="#e2e8f0"/>
+    <line x1="31" x2="1209" y1="289" y2="289" stroke="#e2e8f0"/>
+    <rect x="31" y="204" width="1178" height="85" fill="#fff7f7"/>
+    <rect x="31" y="204" width="4" height="85" fill="#cf1322"/>
+    <g font-size="13" fill="#0f172a">
+      <text x="46" y="239">23/09 14:00</text><text x="188" y="239" fill="#2563eb" font-weight="700">AV-1001 ↗</text>
+      <text x="355" y="233" font-weight="700">Volverán a llamar</text>
+      <text x="355" y="257" fill="#64748b">Cliente solicita contacto luego de las 16:00…</text>
+      <text x="46" y="263" fill="#64748b" font-size="11">Hace 2h</text><text x="188" y="263" font-size="11">099 111 222</text>
+    </g>
+    <rect x="756" y="222" width="111" height="34" rx="6" fill="#2563eb"/>
+    <text x="773" y="244" fill="#fff" font-family="Arial,sans-serif" font-size="13" font-weight="700">Asignarme</text>
+    <rect x="970" y="226" width="123" height="27" rx="5" fill="#fff1f0"/>
+    <text x="982" y="244" fill="#cf1322" font-size="12" font-weight="700">Sin responsable</text>
+    <text x="1158" y="246" fill="#334155" font-size="22" font-weight="700">⋮</text>
+    <g font-size="13" fill="#0f172a">
+      <text x="46" y="326">23/09 13:10</text><text x="188" y="326" fill="#2563eb" font-weight="700">AV-1002 ↗</text>
+      <text x="355" y="320" font-weight="700">Reclama no cumplimiento</text>
+      <text x="355" y="344" fill="#64748b">Revisar coordinación y devolver respuesta…</text>
+      <text x="46" y="350" fill="#64748b" font-size="11">Hace 3h</text><text x="188" y="350" font-size="11">098 333 444</text>
+      <text x="756" y="335">Supervisor QA</text>
+    </g>
+    <rect x="970" y="314" width="99" height="27" rx="5" fill="#eff6ff"/>
+    <text x="982" y="332" fill="#2563eb" font-size="12" font-weight="700">En gestión</text>
+    <text x="1158" y="334" fill="#334155" font-size="22" font-weight="700">⋮</text>
+    <text x="31" y="404" fill="#64748b" font-size="11">Vista esquemática con datos sintéticos. El detalle completo y los comentarios se abren al seleccionar la fila.</text>
+  </g>
+</svg>

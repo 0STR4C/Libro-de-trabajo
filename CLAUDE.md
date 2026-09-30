@@ -14,7 +14,10 @@ Para evitar consumo innecesario de tokens, cómputo y bucles de espera:
    - **PROHIBICIÓN:** Queda terminantemente PROHIBIDO correr la suite general de pruebas unitarias en Python o las pruebas de integración de PostgreSQL cuando el cambio sea puramente visual o de maquetación de componentes.
 
 3. **Diagnóstico Ligero de Compilación:**
-   Si la compilación de Vite falla, analiza el log de error de JavaScript, corrige el componente afectado y vuelve a compilar el paquete. No ejecutes una reconstrucción completa de la imagen Docker a menos que se hayan modificado dependencias en el `package.json`.
+   Si la compilación de Vite falla, analiza el log de error de JavaScript, corrige el componente afectado y vuelve a compilar el paquete.
+
+4. **Reconstrucción obligatoria de la aplicación:**
+   Toda modificación de código que afecte el funcionamiento de la aplicación debe finalizar con una reconstrucción completa de la imagen de Docker (ej. `docker compose up -d --build`). Queda estrictamente prohibido aplicar parches copiando archivos temporalmente a un contenedor en ejecución sin reconstruir su imagen base.
 
 ---
 
@@ -50,3 +53,17 @@ Toda la interfaz debe seguir un estándar de software B2B de alta densidad:
 8. **Layout:** botoneras con `tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-w-full`. No usar márgenes negativos, posiciones absolutas ni anchos rígidos para acomodar controles. Responsable y acción de asignación usan `tw-flex tw-flex-col tw-items-start tw-justify-center tw-gap-1 tw-w-full`.
 9. **Configuración vigente:** Tailwind usa prefijo `tw-`, `important: true` para utilidades y Preflight desactivado. Las utilidades también funcionan en portales bajo `document.body`; no asumir aislamiento por `#prime-react-root`.
 10. **Fuente de verdad:** `AGENTS.md` y `CLAUDE.md` deben conservar contenido idéntico. Las guías históricas y recomendaciones de skills no desplazan estas reglas ni las instrucciones explícitas del usuario. Validación frontend: Vite y sintaxis JS/JSX en Docker.
+
+## 4. CONTRATO DE EMPAQUETADO PARA SERVIDOR
+
+Para cada ZIP de servidor usar `tools/deployment/package_server.py` y su guía
+`tools/deployment/README.md`. Conservar el perfil de Sistemas `sistemas-20260925`:
+APP_PORT configurable en ambos Compose (8000 interno), identidad estable del
+proyecto, logs json-file de 10 MB × 3 por servicio, init y no-new-privileges para
+app, margen inicial de salud de 60 s y espera de arranque de 240 s. La plantilla
+incluye COMPOSE_PROJECT_NAME y BACKUP_MAX_AGE_SECONDS. Validar la mezcla Compose
+con valores sintéticos y puerto alternativo, sin reiniciar la operación local.
+No incluir secretos, datos ni backups en el ZIP ni reemplazar el .env del servidor.
+Preservar el nombre Compose y los volúmenes de la instalación existente; el nombre
+sugerido para una instalación nueva no autoriza renombrar un despliegue activo.
+Generar nuevamente manifiesto y checksum; nunca reutilizar los de un ZIP anterior.

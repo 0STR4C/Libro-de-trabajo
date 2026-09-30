@@ -1,0 +1,5 @@
+# package_server.py: biblioteca estándar, sin instalación pip.
+Python 3.12 (imagen local librodetrabajo-app:latest)
+# Inventario del repositorio; no procesa configuración de credenciales.
+Git 2.x
+Docker con soporte de contenedores Linux

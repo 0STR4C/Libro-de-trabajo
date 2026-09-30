@@ -360,7 +360,7 @@ def _published_schedules(query, params, postgres):
     ).fetchall()}
     plans = query(
         'SELECT * FROM wfm_published_plans WHERE plan_date>=? AND plan_date<=? '
-        'ORDER BY plan_date DESC,team LIMIT 20000',
+        'ORDER BY plan_date DESC,team',
         (start, end),
     ).fetchall()
     projected = {
@@ -369,7 +369,7 @@ def _published_schedules(query, params, postgres):
     }
     stored = query(
         'SELECT * FROM wfm_published_shifts WHERE plan_date>=? AND plan_date<=? '
-        'ORDER BY plan_date DESC,team,user_id LIMIT 20000',
+        'ORDER BY plan_date DESC,team,user_id',
         (start, end),
     ).fetchall()
     result = []
@@ -385,7 +385,7 @@ def _published_schedules(query, params, postgres):
         result.append(_published_row(plan_date, item['team'], item['revision'], shift, people.get(item['user_id'], {}), item['published_at']))
     revisions = query(
         'SELECT * FROM wfm_revisions WHERE published=1 AND plan_date>=? AND plan_date<=? '
-        'ORDER BY plan_date DESC,team,revision DESC LIMIT 20000',
+        'ORDER BY plan_date DESC,team,revision DESC',
         (start, end),
     ).fetchall()
     seen = set()
@@ -775,7 +775,7 @@ def _request_rows(query, actor, params, postgres):
     else:
         sql += ' AND q.user_id=?'
         values.append(actor['id'])
-    sql += ' ORDER BY CASE q.status WHEN \'PENDIENTE\' THEN 0 ELSE 1 END,q.created_at DESC LIMIT 1000'
+    sql += ' ORDER BY CASE q.status WHEN \'PENDIENTE\' THEN 0 ELSE 1 END,q.created_at DESC'
     result = []
     for row in query(sql, tuple(values)).fetchall():
         item = _serializable_record(row)

@@ -1,11 +1,24 @@
+x-production-logging: &production-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
+    logging: *production-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-operativa}
       POSTGRES_USER: ${POSTGRES_USER:-operativa}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatorio en producción}
 
   app:
+    logging: *production-logging
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      start_period: 60s
     build: null
     image: ${APP_IMAGE:?APP_IMAGE es obligatorio en producción}
     environment:
@@ -19,9 +32,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS es obligatorio en producción}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD es obligatorio en producción}
     ports:
-      - "${APP_BIND_ADDRESS:?APP_BIND_ADDRESS es obligatorio en producción}:8000:8000"
+      - "${APP_BIND_ADDRESS:?APP_BIND_ADDRESS es obligatorio en producción}:${APP_PORT:-8000}:8000"
 
   backup:
+    logging: *production-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-operativa}
       POSTGRES_USER: ${POSTGRES_USER:-operativa}

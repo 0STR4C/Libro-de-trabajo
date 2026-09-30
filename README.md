@@ -20,6 +20,14 @@ públicos. La herramienta reutilizable vive en `tools/user_onboarding/`.
 
 Aplicación web desarrollada a partir del flujo observado en **Libro de trabajo - Febrero 2026.xlsx**. Reemplaza la operación diaria en planillas por registros estructurados en PostgreSQL.
 
+El shell React distingue Operación y Supervisión. Resumen muestra el mapa de
+demoras vigentes y alertas operativas; el Dashboard de Supervisión concentra
+métricas y la Auditoría de demoras consulta altas, retiros, responsables y
+eventos históricos. Solo Avisos, Zonas con demora, Auditoría histórica de
+demoras y Auditoría general obtienen páginas de 50 filas desde PostgreSQL.
+Horarios, Planificación, solicitudes WFM, Programados, Cotizador y Configuración
+muestran la lista completa de su rango o filtro seleccionado.
+
 ## Módulos incluidos
 
 ### Planificación de horarios (1.23.0)
@@ -262,9 +270,12 @@ La arquitectura, los contratos de negocio, la operación segura y el tratamiento
 de datos locales están en [ARCHITECTURE.md](ARCHITECTURE.md). Las instrucciones
 canónicas de IA son [AGENTS.md](AGENTS.md) y [CLAUDE.md](CLAUDE.md), idénticas.
 
-El frontend usa React, PrimeReact y Tailwind con Vite. Las diez vistas están en
-`frontend/`; el shell y el enrutador activos siguen en `app/static/index.html`
-y `app/static/app.js`. No eliminarlos como si fueran código muerto.
+El frontend usa React, PrimeReact y Tailwind con Vite. Las diez vistas y el
+shell activo están en `frontend/`; `app/static/index.html` solo monta la raíz
+React. `app/static/app.js` ya no se carga en la aplicación y se conserva como
+referencia histórica. Avisos, Zonas con demora y las dos auditorías usan
+paginación real de 50 registros por solicitud; las vistas de planificación y
+configuración conservan la lista completa del rango o filtro seleccionado.
 
 UI UX Pro Max es una herramienta local de desarrollo, no del backend.
 Consultar la [guía de diseño](tools/ui_ux_guidance/README.md), el

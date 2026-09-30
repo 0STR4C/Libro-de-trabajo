@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button } from 'primereact/button';
 import { Card } from 'primereact/card';
 import { Checkbox } from 'primereact/checkbox';
@@ -22,6 +22,7 @@ const time = row => row.status === 'SIN_REFERENCIA' ? 'Sin referencia confirmada
 export function StandardsView({ model }) {
   const [zone, setZone] = useState(model.filters.zone);
   const [service, setService] = useState(model.filters.service);
+  useEffect(() => { setZone(model.filters.zone); setService(model.filters.service); }, [model.filters]);
   const [dialog, setDialog] = useState(null);
   const [form, setForm] = useState(blank);
   const [history, setHistory] = useState([]);

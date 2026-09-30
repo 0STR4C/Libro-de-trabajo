@@ -1,0 +1,2 @@
+# Ya instalado por requirements.txt del backend; Python 3.12 en Docker.
+psycopg[binary]==3.2.9
