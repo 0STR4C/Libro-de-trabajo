@@ -9,10 +9,11 @@ y pnpm documentados abajo son referencias del harness histórico, no autorizaci�
 para ejecutarlos en el host. La validación UI actual usa únicamente Vite y
 sintaxis JS/JSX según `tools/frontend_build/README.md`.
 
-Propósito: probar una revisión del código sobre la imagen local existente.
-Requiere Docker Desktop y la imagen `librodetrabajo-app:latest` ya disponible.
-No instala paquetes. Las versiones siguen siendo las de esa imagen y deben
-coincidir con `requirements.txt`; no usar este método si cambian dependencias.
+Propósito: reconstruir una revisión del código y su bundle Vite sobre las imágenes
+locales existentes. Requiere Docker Desktop, `librodetrabajo-app:latest` y
+`librodetrabajo-frontend-check:latest`. No instala paquetes ni descarga archivos.
+Las versiones de las imágenes deben coincidir con `requirements.txt` y
+`package-lock.json`; no usar este método si cambian dependencias.
 
 Desde la raíz del proyecto:
 
@@ -21,7 +22,7 @@ docker build --network=none -f tools/wfm_offline_build/Dockerfile -t centro-wfm-
 powershell -ExecutionPolicy Bypass -File tools/postgres_security_test/run.ps1 -ImageName centro-wfm-candidate:latest
 ```
 
-Entrada: `app/`, `CHANGELOG.md` e imagen local existente. Salida: imagen candidata. No modifica
+Entrada: `app/`, `frontend/`, configuración Vite, `CHANGELOG.md` e imágenes locales. Salida: imagen candidata. No modifica
 bases, archivos originales ni contenedores activos. El segundo comando crea
 contenedores efímeros de prueba sin volumen operativo. No publica el resultado.
 

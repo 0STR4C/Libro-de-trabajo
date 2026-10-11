@@ -609,24 +609,16 @@ class Handler(SimpleHTTPRequestHandler):
                 employee_id=int(value("employee_id")) if value("employee_id") else None
             except (ValueError,TypeError):return self.send_json({"detail":"El período o la persona indicada no es válido"},400)
             if not wfm.manager(actor):employee_id=actor['id']
+            report_params={"week":week.isoformat() if hasattr(week,'isoformat') else week,"date_from":date_from,"date_to":date_to,"role":value("role"),"q":value("q")}
+            if employee_id is not None:report_params["employee_id"]=str(employee_id)
             if path.startswith("/api/reports/"):
-                report_params={"week":week.isoformat() if hasattr(week,'isoformat') else week,"date_from":date_from,"date_to":date_to,"role":value("role"),"q":value("q")}
-                if employee_id is not None:report_params["employee_id"]=str(employee_id)
                 with connect() as db:
                     result=wfm._published_schedules(db.execute,report_params,False)
                     audit(db,"report",0,"EXPORTADO",actor["display_name"],json.dumps({"kind":"schedules","filters":report_params,"rows":len(result)},ensure_ascii=False,sort_keys=True),actor_id=actor["id"],after={"kind":"schedules","filters":report_params,"rows":len(result)})
                 return self.send_bytes(report_csv_bytes("schedules",result),"text/csv; charset=utf-8","reporte_horarios.csv")
-            query="SELECT s.id,s.user_id,s.schedule_date,s.week_start,COALESCE(NULLIF(s.role_name,''),r.name,'') role_name,s.shift_name,s.start_time,s.end_time,s.notes,s.created_by,s.created_at,s.updated_at,COALESCE(u.display_name,'Usuario no disponible') display_name FROM work_schedules s LEFT JOIN users u ON u.id=s.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE 1=1";values=[]
-            if week:query+=" AND s.week_start=?";values.append(week)
-            else:
-                if date_from:query+=" AND s.schedule_date>=?";values.append(date_from)
-                if date_to:query+=" AND s.schedule_date<=?";values.append(date_to)
-            if employee_id is not None:query+=" AND s.user_id=?";values.append(employee_id)
-            if value("role"):query+=" AND COALESCE(NULLIF(s.role_name,''),r.name)=?";values.append(value("role"))
-            if value("q"):
-                query+=" AND lower(COALESCE(u.display_name,'')||' '||COALESCE(s.role_name,'')||' '||COALESCE(s.shift_name,'')||' '||COALESCE(s.notes,'')) LIKE lower(?)";values.append(f"%{value('q')}%")
-            query+=" ORDER BY s.schedule_date,s.start_time,display_name LIMIT 20000"
-            with connect() as db:result=rows(db,query,values)
+            try:
+                with connect() as db:result=wfm._published_schedules(db.execute,report_params,False)
+            except wfm.WfmError as exc:return self.send_json({"detail":str(exc)},exc.status)
             return self.send_json(result)
         notice_history_match=re.fullmatch(r"/api/notices/(\d+)/history",path)
         if notice_history_match:

@@ -367,6 +367,16 @@ def _published_schedules(query, params, postgres):
         ((row['plan_date'].isoformat() if hasattr(row['plan_date'], 'isoformat') else str(row['plan_date'])), row['team']): int(row['revision'])
         for row in plans
     }
+    revisions = query(
+        'SELECT * FROM wfm_revisions WHERE published=1 AND plan_date>=? AND plan_date<=? '
+        'ORDER BY plan_date DESC,team,revision DESC',
+        (start, end),
+    ).fetchall()
+    latest_revisions = {}
+    for record in revisions:
+        plan_date = record['plan_date'].isoformat() if hasattr(record['plan_date'], 'isoformat') else str(record['plan_date'])
+        key = (plan_date, record['team'])
+        latest_revisions[key] = max(latest_revisions.get(key, 0), int(record['revision']))
     stored = query(
         'SELECT * FROM wfm_published_shifts WHERE plan_date>=? AND plan_date<=? '
         'ORDER BY plan_date DESC,team,user_id',
@@ -376,6 +386,8 @@ def _published_schedules(query, params, postgres):
     for record in stored:
         item = dict(record)
         plan_date = item['plan_date'].isoformat() if hasattr(item['plan_date'], 'isoformat') else str(item['plan_date'])
+        if int(item['revision']) < latest_revisions.get((plan_date, item['team']), 0):
+            continue
         shift = dict(
             user_id=item['user_id'], start=item['start_slot'], end=item['end_slot'],
             segments=json.loads(item['segments']), break_duration=item['break_duration'],
@@ -383,11 +395,6 @@ def _published_schedules(query, params, postgres):
             **{'break': item['break_slot']},
         )
         result.append(_published_row(plan_date, item['team'], item['revision'], shift, people.get(item['user_id'], {}), item['published_at']))
-    revisions = query(
-        'SELECT * FROM wfm_revisions WHERE published=1 AND plan_date>=? AND plan_date<=? '
-        'ORDER BY plan_date DESC,team,revision DESC',
-        (start, end),
-    ).fetchall()
     seen = set()
     published_plan_keys = set(projected)
     for record in revisions:
@@ -435,6 +442,42 @@ def _published_schedules(query, params, postgres):
             created_at=(item['created_at'].isoformat() if hasattr(item['created_at'], 'isoformat') else str(item['created_at'])),
             updated_at=(item['updated_at'].isoformat() if hasattr(item['updated_at'], 'isoformat') else str(item['updated_at'])),
         ))
+    if params.get('include_free_days') and raw_week:
+        drafts = query(
+            'SELECT plan_date,team,revision FROM wfm_revisions WHERE published=0 '
+            'AND plan_date>=? AND plan_date<=? ORDER BY plan_date,team,revision DESC',
+            (start, end),
+        ).fetchall()
+        draft_days = {}
+        for record in drafts:
+            plan_date = record['plan_date'].isoformat() if hasattr(record['plan_date'], 'isoformat') else str(record['plan_date'])
+            key = (plan_date, record['team'])
+            if key not in published_plan_keys and key not in draft_days:
+                draft_days[key] = int(record['revision'])
+        occupied = {(row['schedule_date'], row['user_id']) for row in result}
+        historical_people = {row['user_id'] for row in result}
+        for plan_date, published_team in published_plan_keys | set(draft_days):
+            if not start <= plan_date <= end:
+                continue
+            draft_only = (plan_date, published_team) in draft_days
+            for person in people.values():
+                if person['role_name'] != published_team or not (person['active'] or person['id'] in historical_people):
+                    continue
+                key = (plan_date, person['id'])
+                if key in occupied:
+                    continue
+                result.append(dict(
+                    id=f'{"draft" if draft_only else "free"}:{plan_date}:{published_team}:{person["id"]}', user_id=person['id'],
+                    schedule_date=plan_date, week_start=start, role_name=published_team,
+                    team=published_team, display_name=person['display_name'],
+                    shift_name='Borrador sin publicar' if draft_only else 'Libre publicado', start_time=None, end_time=None,
+                    start_slot=None, end_slot=None, crosses_midnight=False, segments=[],
+                    break_slot=None, break_duration=0, overtime_slots=0, exceptions=[],
+                    revision=draft_days[(plan_date, published_team)] if draft_only else max(projected.get((plan_date, published_team), 0), latest_revisions.get((plan_date, published_team), 0)),
+                    published_at='', source='draft' if draft_only else 'wfm', notes='', created_by='', created_at='', updated_at='',
+                    draft_day=draft_only, published_day=not draft_only,
+                ))
+                occupied.add(key)
     query_text = str(params.get('q') or '').strip().casefold()
     filtered = []
     for row in result:
