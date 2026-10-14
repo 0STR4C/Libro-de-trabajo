@@ -291,6 +291,167 @@ class PostgresSecurityTests(unittest.TestCase):
             statuses = sorted(executor.map(save, clients))
         self.assertEqual(statuses, [200, 409])
 
+    def test_wfm_week_publish_conflict_is_atomic_and_structured(self):
+        self.login()
+        days = [f'2027-02-{1 + offset:02d}' for offset in range(7)]
+        expected = {}
+        for plan_date in days:
+            url = f'/api/wfm/plan?date={plan_date}&team=Telefonista'
+            plan = self.request(url)[2]
+            status, _, saved = self.request(url, 'POST', {
+                'revision': plan['revision'], 'operation': 'save',
+                'demand': [0] * 72, 'shifts': [],
+            }, csrf=True)
+            self.assertEqual(status, 200)
+            expected[plan_date] = saved['revision']
+
+        changed_url = f'/api/wfm/plan?date={days[3]}&team=Telefonista'
+        changed = self.request(changed_url)[2]
+        self.assertEqual(self.request(changed_url, 'POST', {
+            'revision': changed['revision'], 'operation': 'save',
+            'demand': [1] * 72, 'shifts': [],
+        }, csrf=True)[0], 200)
+
+        status, _, body = self.request(
+            '/api/wfm/publish-week?week=2027-02-01&team=Telefonista', 'POST',
+            {'expected_revisions': expected, 'confirm_exceptions': True}, csrf=True,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body['detail']['code'], 'WFM_WEEK_REVISION_CONFLICT')
+        self.assertEqual(body['detail']['conflict']['plan_date'], days[3])
+        with self.server_module.connect() as database:
+            published = database.execute(
+                "SELECT count(*) total FROM wfm_revisions WHERE team='Telefonista' "
+                "AND plan_date BETWEEN '2027-02-01' AND '2027-02-07' AND published=1"
+            ).fetchone()['total']
+        self.assertEqual(published, 0)
+
+    def test_wfm_request_decision_racing_publication_remains_consistent(self):
+        self.login()
+        password = 'ephemeral-wfm-race-password'
+        username = f'wfm.race.{time.time_ns()}'
+        user_id = self.create_test_user(username, 'Telefonista', password)
+        plan_date = '2027-03-10'
+        url = f'/api/wfm/plan?date={plan_date}&team=Telefonista'
+        initial = self.request(url)[2]
+        status, _, published = self.request(url, 'POST', {
+            'revision': initial['revision'], 'operation': 'publish',
+            'confirm_exceptions': True, 'demand': [0] * 72,
+            'shifts': [{'user_id': user_id, 'start': 16}],
+        }, csrf=True)
+        self.assertEqual(status, 200)
+
+        agent, agent_cookies = self.isolated_client()
+        self.login(username, password, agent, agent_cookies)
+        status, _, created = self.request('/api/wfm/requests', 'POST', {
+            'request_type': 'AUSENCIA', 'requested_date': plan_date,
+            'reason': 'Carrera controlada de publicación',
+        }, csrf=True, opener=agent, cookie_jar=agent_cookies)
+        self.assertEqual(status, 200)
+
+        reviewers = [self.isolated_client(), self.isolated_client()]
+        for opener, jar in reviewers:
+            self.login(opener=opener, cookie_jar=jar)
+        barrier = threading.Barrier(2)
+
+        def approve():
+            opener, jar = reviewers[0]
+            barrier.wait()
+            return self.request('/api/wfm/requests', 'POST', {
+                'operation': 'decide', 'request_id': created['request_id'],
+                'decision': 'APROBAR', 'resolution_note': 'Aprobación concurrente',
+            }, csrf=True, opener=opener, cookie_jar=jar)
+
+        def republish():
+            opener, jar = reviewers[1]
+            barrier.wait()
+            return self.request(url, 'POST', {
+                'revision': published['revision'], 'operation': 'publish',
+                'confirm_exceptions': True, 'demand': [1] * 72,
+                'shifts': [{'user_id': user_id, 'start': 16}],
+            }, csrf=True, opener=opener, cookie_jar=jar)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            approval_future = executor.submit(approve)
+            publish_future = executor.submit(republish)
+            approval = approval_future.result()
+            republished = publish_future.result()
+
+        self.assertEqual(sorted([approval[0], republished[0]]), [200, 409])
+        if approval[0] == 409:
+            self.assertEqual(approval[2]['detail']['code'], 'WFM_REQUEST_SOURCE_REVISION_CONFLICT')
+            revision = approval[2]['detail']['conflict']['current_revision']
+            opener, jar = reviewers[0]
+            approval = self.request('/api/wfm/requests', 'POST', {
+                'operation': 'decide', 'request_id': created['request_id'],
+                'decision': 'APROBAR', 'resolution_note': 'Aprobación sobre revisión confirmada',
+                'confirm_current_revision': True, 'expected_published_revision': revision,
+            }, csrf=True, opener=opener, cookie_jar=jar)
+            self.assertEqual(approval[0], 200)
+        else:
+            self.assertEqual(republished[2]['detail']['code'], 'WFM_PLAN_REVISION_CONFLICT')
+
+        current = self.request(url)[2]
+        request_rows = self.request('/api/wfm/requests?team=Telefonista')[2]
+        resolved = next(item for item in request_rows if item['request_id'] == created['request_id'])
+        self.assertEqual(resolved['status'], 'APROBADA')
+        shift = next(item for item in current['shifts'] if item['user_id'] == user_id)
+        linked = [item for item in shift['exceptions'] if item.get('source_request_id') == created['request_id']]
+        self.assertEqual(len(linked), 1)
+
+    def test_wfm_approve_reject_and_cancel_resolve_exactly_once(self):
+        self.login()
+        password = 'ephemeral-wfm-resolution-password'
+        username = f'wfm.resolve.{time.time_ns()}'
+        user_id = self.create_test_user(username, 'Telefonista', password)
+        plan_date = '2027-03-17'
+        url = f'/api/wfm/plan?date={plan_date}&team=Telefonista'
+        initial = self.request(url)[2]
+        self.assertEqual(self.request(url, 'POST', {
+            'revision': initial['revision'], 'operation': 'publish',
+            'confirm_exceptions': True, 'demand': [0] * 72,
+            'shifts': [{'user_id': user_id, 'start': 16}],
+        }, csrf=True)[0], 200)
+
+        agent = self.isolated_client()
+        self.login(username, password, *agent)
+        created = self.request('/api/wfm/requests', 'POST', {
+            'request_type': 'AUSENCIA', 'requested_date': plan_date,
+            'reason': 'Resolución exactamente una vez',
+        }, csrf=True, opener=agent[0], cookie_jar=agent[1])[2]
+        admins = [self.isolated_client(), self.isolated_client()]
+        for opener, jar in admins:
+            self.login(opener=opener, cookie_jar=jar)
+        barrier = threading.Barrier(3)
+
+        def resolve(decision, client):
+            barrier.wait()
+            return self.request('/api/wfm/requests', 'POST', {
+                'operation': 'decide', 'request_id': created['request_id'],
+                'decision': decision,
+            }, csrf=True, opener=client[0], cookie_jar=client[1])
+
+        def cancel():
+            barrier.wait()
+            return self.request('/api/wfm/requests', 'POST', {
+                'operation': 'cancel', 'request_id': created['request_id'],
+            }, csrf=True, opener=agent[0], cookie_jar=agent[1])
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            results = [
+                executor.submit(resolve, 'APROBAR', admins[0]),
+                executor.submit(resolve, 'RECHAZAR', admins[1]),
+                executor.submit(cancel),
+            ]
+            responses = [future.result() for future in results]
+        self.assertEqual(sorted(response[0] for response in responses), [200, 409, 409])
+        for status, _, body in responses:
+            if status == 409:
+                self.assertEqual(body['detail']['code'], 'WFM_REQUEST_ALREADY_RESOLVED')
+        rows = self.request('/api/wfm/requests?scope=mine', opener=agent[0], cookie_jar=agent[1])[2]
+        final = next(item for item in rows if item['request_id'] == created['request_id'])
+        self.assertIn(final['status'], {'APROBADA', 'RECHAZADA', 'CANCELADA'})
+
     def test_logout_invalidates_session(self):
         self.login()
         status, _, _ = self.request("/api/auth/logout", "POST", {}, csrf=True)

@@ -21,6 +21,7 @@ class WfmTests(unittest.TestCase):
         INSERT INTO roles VALUES(1,'Telefonista'),(2,'Supervisor'),(3,'Administrador');
         INSERT INTO users VALUES(1,'Agente de prueba',1,1),(2,'Supervisor de prueba',2,1);
         ''')
+        wfm.ensure_schema(self.db)
         self.actor = dict(id=2, role_name='Supervisor', display_name='Supervisor de prueba')
         self.params = dict(date='2026-09-08', team='Telefonista')
         self.plan = dict(revision=0, demand=[0]*48, shifts=[dict(user_id=1, start=16)])
@@ -61,7 +62,7 @@ class WfmTests(unittest.TestCase):
         self.assertEqual(initial['demand'][:11],[0]*11)
         self.assertEqual(initial['demand'][11:44],[3]*33)
         self.assertEqual(initial['demand'][44:],[0]*28)
-        saved=self.call('POST',data={'requirements':[1,2,3,4,5,6,7]},action='requirements')
+        saved=self.call('POST',data={'requirements':[1,2,3,4,5,6,7],'expected_revision':self.call('GET',action='requirements')['revision']},action='requirements')
         self.assertEqual(saved['requirements'],[1,2,3,4,5,6,7])
         next_day=self.call('GET',params={'date':'2026-09-14','team':'Telefonista'})
         self.assertEqual(next_day['demand'][11:44],[1]*33)
@@ -81,8 +82,11 @@ class WfmTests(unittest.TestCase):
         admin=dict(id=3,role_name='Administrador')
         current=self.call('GET',actor=admin,action='settings',params={})
         self.assertEqual((current['shift_minutes'],current['break_minutes']),(390,30))
-        updated=self.call('POST',actor=admin,action='settings',params={},data={'shift_minutes':480,'break_minutes':60})
+        updated=self.call('POST',actor=admin,action='settings',params={},data={'shift_minutes':480,'break_minutes':60,'expected_revision':current['revision']})
         self.assertEqual((updated['shift_slots'],updated['break_slots']),(16,2))
+        with self.assertRaises(wfm.WfmError) as conflict:
+            self.call('POST',actor=admin,action='settings',params={},data={'shift_minutes':390,'break_minutes':30,'expected_revision':current['revision']})
+        self.assertEqual(conflict.exception.status,409)
         plan=self.call('POST',actor=admin,params={'date':'2026-09-15','team':'Telefonista'},data={'revision':0,'demand':[0]*48,'shifts':[{'user_id':1,'start':11}]})
         self.assertEqual((plan['shifts'][0]['break'],plan['shifts'][0]['break_duration'],plan['shifts'][0]['end']),(18,2,27))
         with self.assertRaises(wfm.WfmError) as err:self.call('GET',actor=self.actor,action='settings',params={})
@@ -178,7 +182,9 @@ class WfmTests(unittest.TestCase):
         result=self.call(
             'POST', action='publish-week',
             params={'week':'2026-09-07','team':'Telefonista'},
-            data={'confirm_exceptions':True},
+            data={'confirm_exceptions':True,'expected_revisions':{
+                f'2026-09-{7+offset:02d}':1 for offset in range(7)
+            }},
         )
         self.assertEqual(result['published_count'],7)
         self.assertEqual(result['missing_drafts'],[])
@@ -214,7 +220,9 @@ class WfmTests(unittest.TestCase):
             self.call(
                 'POST',action='publish-week',
                 params={'week':'2026-09-07','team':'Telefonista'},
-                data={'confirm_exceptions':True},
+                data={'confirm_exceptions':True,'expected_revisions':{
+                    f'2026-09-{7+offset:02d}':1 for offset in range(7)
+                }},
             )
         published=self.db.execute('SELECT COUNT(*) total FROM wfm_revisions WHERE published=1').fetchone()['total']
         self.assertEqual(published,0)
@@ -405,7 +413,10 @@ class WfmTests(unittest.TestCase):
         with self.assertRaises(wfm.WfmError) as error:
             self.call('POST',action='requests',params={},data=decision)
         self.assertEqual(error.exception.status,409)
+        self.assertEqual(error.exception.code,'WFM_REQUEST_SOURCE_REVISION_CONFLICT')
+        self.assertEqual(error.exception.conflict['current_revision'],2)
         decision['confirm_current_revision']=True
+        decision['expected_published_revision']=2
         result=self.call('POST',action='requests',params={},data=decision)
         self.assertEqual(result['applied_revision'],3)
 
@@ -447,6 +458,9 @@ class WfmTests(unittest.TestCase):
                 'expected_revisions':{f'2026-09-{7+offset:02d}':1 for offset in range(7)},
             })
         self.assertEqual(error.exception.status,409)
+        self.assertEqual(error.exception.code,'WFM_WEEK_REVISION_CONFLICT')
+        self.assertEqual(error.exception.conflict['plan_date'],'2026-09-08')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) total FROM wfm_revisions WHERE published=1').fetchone()['total'],0)
 
     def test_overlapping_exception_and_duplicate_exception_id_are_rejected(self):
         plan=copy.deepcopy(self.plan)

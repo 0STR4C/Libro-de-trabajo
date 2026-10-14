@@ -541,7 +541,7 @@ class Handler(SimpleHTTPRequestHandler):
                     audit(db,'wfm',0,event,actor['display_name'],detail,actor_id=actor['id'])
             return self.send_json(result)
         except wfm.WfmError as error:
-            return self.send_json({'detail':str(error)},error.status)
+            return self.send_json({'detail':error.detail},error.status)
         except Exception:
             return self.send_json({'detail':'No se pudo completar la operación WFM. Reiniciá el servicio y volvé a intentar.'},500)
     def do_GET(self):
@@ -618,7 +618,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_bytes(report_csv_bytes("schedules",result),"text/csv; charset=utf-8","reporte_horarios.csv")
             try:
                 with connect() as db:result=wfm._published_schedules(db.execute,report_params,False)
-            except wfm.WfmError as exc:return self.send_json({"detail":str(exc)},exc.status)
+            except wfm.WfmError as exc:return self.send_json({"detail":exc.detail},exc.status)
             return self.send_json(result)
         notice_history_match=re.fullmatch(r"/api/notices/(\d+)/history",path)
         if notice_history_match:

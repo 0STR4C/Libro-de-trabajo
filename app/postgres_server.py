@@ -773,7 +773,7 @@ def wfm_get(action: str, request: Request):
         with connect() as database:
             return dispatch(database, actor, 'GET', action, dict(request.query_params), postgres=True)
     except WfmError as error:
-        raise HTTPException(error.status, str(error)) from None
+        raise HTTPException(error.status, error.detail) from None
     except Exception:
         LOGGER.exception("Error inesperado al consultar WFM: %s", action)
         raise HTTPException(500, "No se pudo cargar la planificación. Reintentá después de actualizar el servicio.") from None
@@ -805,7 +805,7 @@ def wfm_post(action: str, request: Request, data: dict = Body(...)):
             audit(database,'wfm',0,event,actor['display_name'],detail,actor_id=actor['id'])
             return result
     except WfmError as error:
-        raise HTTPException(error.status, str(error)) from None
+        raise HTTPException(error.status, error.detail) from None
     except Exception:
         LOGGER.exception("Error inesperado al actualizar WFM: %s", action)
         raise HTTPException(500, "No se pudo actualizar la planificación. Reintentá después de actualizar el servicio.") from None

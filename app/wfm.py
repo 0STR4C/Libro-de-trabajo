@@ -101,17 +101,34 @@ def ensure_schema(database, postgres=False):
     if postgres:
         for column, definition in WFM_REQUEST_COLUMNS.items():
             database.execute(f'ALTER TABLE wfm_requests ADD COLUMN IF NOT EXISTS {column} {definition}')
+        database.execute('ALTER TABLE wfm_weekly_requirements ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1')
         return
     existing = {row[1] for row in database.execute('PRAGMA table_info(wfm_requests)').fetchall()}
     for column, definition in WFM_REQUEST_COLUMNS.items():
         if column not in existing:
             database.execute(f'ALTER TABLE wfm_requests ADD COLUMN {column} {definition}')
+    requirement_columns = {row[1] for row in database.execute('PRAGMA table_info(wfm_weekly_requirements)').fetchall()}
+    if requirement_columns and 'revision' not in requirement_columns:
+        database.execute('ALTER TABLE wfm_weekly_requirements ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
 
 
 class WfmError(ValueError):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, *, code=None, conflict=None):
         super().__init__(message)
         self.status = status
+        self.code = code
+        self.conflict = conflict
+
+    @property
+    def detail(self):
+        if not self.code and self.conflict is None:
+            return str(self)
+        result = {'message': str(self)}
+        if self.code:
+            result['code'] = self.code
+        if self.conflict is not None:
+            result['conflict'] = self.conflict
+        return result
 
 
 def manager(actor):
@@ -578,10 +595,13 @@ def load_wfm_settings(query, actor_id):
         )
     records = query('SELECT setting_key,value FROM wfm_settings').fetchall()
     values = defaults.copy()
+    revision = 1
     for record in records:
         if record['setting_key'] in values:
             values[record['setting_key']] = int(record['value'])
-    return _settings_response(values)
+        elif record['setting_key'] == 'revision':
+            revision = int(record['value'])
+    return {**_settings_response(values), 'revision': revision}
 
 
 def validate_wfm_settings(data):
@@ -725,6 +745,11 @@ def load_requirements(query, team, actor_id):
     for record in records:
         values[int(record['weekday'])] = int(record['required'])
     return [defaults[index] if value is None else value for index, value in enumerate(values)]
+
+
+def requirements_revision(query, team):
+    record = query('SELECT revision FROM wfm_weekly_requirements WHERE team=? AND weekday=0', (team,)).fetchone()
+    return int(record['revision']) if record else 1
 
 
 def validate_requirements(data):
@@ -928,7 +953,11 @@ def _cancel_request(query, actor, data, postgres):
     if request['user_id'] != actor['id']:
         raise WfmError('Solo podés cancelar una solicitud propia', 403)
     if request['status'] != 'PENDIENTE':
-        raise WfmError('Solo se pueden cancelar solicitudes pendientes', 409)
+        raise WfmError(
+            'La solicitud ya fue resuelta y no puede cancelarse', 409,
+            code='WFM_REQUEST_ALREADY_RESOLVED',
+            conflict={'request_id': request_id, 'status': request['status']},
+        )
     timestamp = datetime.now(timezone.utc).isoformat()
     query(
         'UPDATE wfm_requests SET status=\'CANCELADA\',cancelled_at=?,cancelled_by=? WHERE request_id=?',
@@ -963,7 +992,17 @@ def _decide_request(query, actor, data, postgres):
         raise WfmError('Solicitud inexistente', 404)
     request = _serializable_record(request)
     if request['status'] != 'PENDIENTE':
-        raise WfmError('La solicitud ya fue resuelta', 409)
+        raise WfmError(
+            'La solicitud ya fue resuelta', 409,
+            code='WFM_REQUEST_ALREADY_RESOLVED',
+            conflict={
+                'request_id': request_id,
+                'status': request['status'],
+                'reviewed_by': request.get('reviewed_by'),
+                'reviewed_at': request.get('reviewed_at'),
+                'applied_revision': request.get('applied_revision'),
+            },
+        )
     timestamp = datetime.now(timezone.utc).isoformat()
     applied_revision = None
     if decision == 'APROBAR':
@@ -985,11 +1024,24 @@ def _decide_request(query, actor, data, postgres):
         current = dict(current)
         source_revision = request.get('source_revision')
         if source_revision is not None and int(source_revision) != int(current['revision']):
-            if data.get('confirm_current_revision') is not True:
+            confirmed_revision = data.get('expected_published_revision')
+            if (data.get('confirm_current_revision') is not True
+                    or type(confirmed_revision) is not int
+                    or confirmed_revision != int(current['revision'])):
                 raise WfmError(
                     f'El horario publicado cambió desde la solicitud (revisión {source_revision} → '
                     f'{current["revision"]}). Revisá el horario vigente antes de confirmar.',
                     409,
+                    code='WFM_REQUEST_SOURCE_REVISION_CONFLICT',
+                    conflict={
+                        'request_id': request_id,
+                        'plan_date': plan_date,
+                        'team': team,
+                        'source_revision': int(source_revision),
+                        'current_revision': int(current['revision']),
+                        'changed_by': current.get('actor_id'),
+                        'changed_at': _serializable_record(current).get('created_at'),
+                    },
                 )
         plan = normalize_plan(json.loads(current['payload']))
         shift = next((item for item in plan.get('shifts', []) if item.get('user_id') == request['user_id']), None)
@@ -1072,27 +1124,47 @@ def _publish_week(query, actor, params, data, postgres):
     settings = load_wfm_settings(query, actor['id'])
     requirements = load_requirements(query, team, actor['id'])
     drafts, missing, already_published, alert_messages = [], [], [], []
+    week_dates = [(first_day + timedelta(days=offset)).isoformat() for offset in range(7)]
     expected_revisions = data.get('expected_revisions')
-    if expected_revisions is not None and not isinstance(expected_revisions, dict):
-        raise WfmError('Las revisiones esperadas de la semana son inválidas')
-    for offset in range(7):
-        plan_date = (first_day + timedelta(days=offset)).isoformat()
+    if not isinstance(expected_revisions, dict) or set(expected_revisions) != set(week_dates):
+        supplied = set(expected_revisions) if isinstance(expected_revisions, dict) else set()
+        raise WfmError(
+            'La publicación semanal requiere las siete revisiones verificadas', 409,
+            code='WFM_WEEK_PREVIEW_REQUIRED',
+            conflict={
+                'week': week_start,
+                'team': team,
+                'missing_dates': sorted(set(week_dates) - supplied),
+                'unexpected_dates': sorted(supplied - set(week_dates)),
+            },
+        )
+    for plan_date in week_dates:
         current = query(
             'SELECT * FROM wfm_revisions WHERE plan_date=? AND team=? ORDER BY revision DESC LIMIT 1',
             (plan_date, team),
         ).fetchone()
-        if expected_revisions is not None and plan_date in expected_revisions:
-            try:
-                expected = integer(expected_revisions[plan_date], 0, 2**31 - 1, 'Revisión esperada')
-            except (KeyError, TypeError):
-                raise WfmError(f'Revisión esperada inválida para {plan_date}') from None
-            actual = int(current['revision']) if current else 0
-            if expected != actual:
-                raise WfmError(
-                    f'El día {plan_date} cambió mientras revisabas la semana '
-                    f'(esperabas revisión {expected}, ahora está en {actual}). Recargá antes de publicar.',
-                    409,
-                )
+        try:
+            expected = integer(expected_revisions[plan_date], 0, 2**31 - 1, 'Revisión esperada')
+        except (KeyError, TypeError):
+            raise WfmError(f'Revisión esperada inválida para {plan_date}') from None
+        actual = int(current['revision']) if current else 0
+        if expected != actual:
+            current_record = _serializable_record(current) if current else {}
+            raise WfmError(
+                f'El día {plan_date} cambió mientras revisabas la semana '
+                f'(esperabas revisión {expected}, ahora está en {actual}). Recargá antes de publicar.',
+                409,
+                code='WFM_WEEK_REVISION_CONFLICT',
+                conflict={
+                    'week': week_start,
+                    'team': team,
+                    'plan_date': plan_date,
+                    'expected_revision': expected,
+                    'current_revision': actual,
+                    'changed_by': current_record.get('actor_id'),
+                    'changed_at': current_record.get('created_at'),
+                },
+            )
         if not current:
             missing.append(plan_date)
             continue
@@ -1124,6 +1196,31 @@ def _publish_week(query, actor, params, data, postgres):
         already_published=already_published, missing_drafts=missing,
         warnings=alert_messages,
     )
+
+
+def _plan_response(plan, plan_date, team, revision, published_revision, people,
+                   requirements, requirements_version, weekly_schedule, settings,
+                   *, demand_filled=None, alert_messages=None):
+    result = dict(
+        plan,
+        plan_date=plan_date,
+        team=team,
+        revision=revision,
+        published_revision=published_revision,
+        people=people,
+        requirements=requirements,
+        requirements_revision=requirements_version,
+        weekly_schedule=weekly_schedule,
+        settings=settings,
+        window=TEAM_WINDOWS[team],
+        horizon=HORIZON_SLOTS,
+        exception_types=list(EXCEPTION_TYPES),
+        coverage=coverage(plan, team),
+        warnings=warnings(plan, team) if alert_messages is None else alert_messages,
+    )
+    if demand_filled is not None:
+        result['demand_filled'] = demand_filled
+    return result
 
 
 def dispatch(db, actor, method, action, params, data=None, postgres=False):
@@ -1210,6 +1307,9 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
                 query('SELECT pg_advisory_xact_lock(73139030)')
             else:
                 query('BEGIN IMMEDIATE')
+            current = load_wfm_settings(query, actor['id'])
+            if type(data.get('expected_revision')) is not int or data['expected_revision'] != current['revision']:
+                raise WfmError('Las reglas WFM cambiaron desde que las abriste. Recargá la configuración antes de guardar', 409)
             timestamp = datetime.now(timezone.utc).isoformat()
             for setting_key, value in settings.items():
                 query(
@@ -1218,6 +1318,12 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
                     'value=excluded.value,actor_id=excluded.actor_id,updated_at=excluded.updated_at',
                     (setting_key, value, actor['id'], timestamp),
                 )
+            query(
+                'INSERT INTO wfm_settings(setting_key,value,actor_id,updated_at) '
+                'VALUES(?,?,?,?) ON CONFLICT(setting_key) DO UPDATE SET '
+                'value=excluded.value,actor_id=excluded.actor_id,updated_at=excluded.updated_at',
+                ('revision', current['revision'] + 1, actor['id'], timestamp),
+            )
             return load_wfm_settings(query, actor['id'])
         raise WfmError('Operación inválida')
 
@@ -1288,17 +1394,19 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
                 query('SELECT pg_advisory_xact_lock(73139030)')
             else:
                 query('BEGIN IMMEDIATE')
+            load_requirements(query, team, actor['id'])
+            revision = requirements_revision(query, team)
+            if type(data.get('expected_revision')) is not int or data['expected_revision'] != revision:
+                raise WfmError('Los requerimientos cambiaron desde que los abriste. Recargá el plan antes de guardar', 409)
             timestamp = datetime.now(timezone.utc).isoformat()
             for weekday, required in enumerate(requirements):
                 query(
-                    'INSERT INTO wfm_weekly_requirements(team,weekday,required,actor_id,updated_at) '
-                    'VALUES(?,?,?,?,?) ON CONFLICT(team,weekday) DO UPDATE SET '
-                    'required=excluded.required,actor_id=excluded.actor_id,updated_at=excluded.updated_at',
-                    (team, weekday, required, actor['id'], timestamp),
+                    'UPDATE wfm_weekly_requirements SET required=?,actor_id=?,updated_at=?,revision=? WHERE team=? AND weekday=?',
+                    (required, actor['id'], timestamp, revision + 1, team, weekday),
                 )
-            return dict(team=team, requirements=requirements)
+            return dict(team=team, requirements=requirements, revision=revision + 1)
         if method == 'GET':
-            return dict(team=team, requirements=load_requirements(query, team, actor['id']))
+            return dict(team=team, requirements=load_requirements(query, team, actor['id']), revision=requirements_revision(query, team))
         raise WfmError('Operación inválida')
 
     if action != 'plan':
@@ -1326,12 +1434,11 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
             shifts=default_shifts(weekly_schedule, plan_date, settings),
         )
         plan, demand_filled = fill_missing_demand(source_plan, requirements, plan_date, team)
-        return dict(plan, revision=revision, published_revision=published_revision, people=people,
-                    requirements=requirements, weekly_schedule=weekly_schedule,
-                    settings=settings, demand_filled=demand_filled,
-                    window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                    exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
-                    warnings=warnings(plan, team))
+        return _plan_response(
+            plan, plan_date, team, revision, published_revision, people,
+            requirements, requirements_revision(query, team), weekly_schedule, settings,
+            demand_filled=demand_filled,
+        )
     if method != 'POST' or not isinstance(data, dict):
         raise WfmError('Operación inválida')
     if integer(data.get('revision'), 0, 2**31-1, 'Revisión') != revision:
@@ -1345,6 +1452,15 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
         raise WfmError(
             'Otro supervisor cambió este plan. Recargá antes de guardar; tu borrador sigue visible.' + detail,
             409,
+            code='WFM_PLAN_REVISION_CONFLICT',
+            conflict={
+                'plan_date': plan_date,
+                'team': team,
+                'expected_revision': data.get('revision'),
+                'current_revision': int(revision),
+                'changed_by': changed_by,
+                'changed_at': _serializable_record(current).get('created_at') if current else None,
+            },
         )
     plan = validate(data, {p['id'] for p in people}, team, settings)
     operation = data.get('operation', 'save')
@@ -1352,11 +1468,10 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
         raise WfmError('Operación inválida')
     if operation == 'optimize':
         plan = optimize(plan, team)
-        return dict(plan, revision=revision, published_revision=published_revision, people=people,
-                    requirements=requirements, weekly_schedule=weekly_schedule,
-                    settings=settings, window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                    exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
-                    warnings=warnings(plan, team))
+        return _plan_response(
+            plan, plan_date, team, revision, published_revision, people,
+            requirements, requirements_revision(query, team), weekly_schedule, settings,
+        )
     alerts = warnings(plan, team)
     if operation == 'publish' and alerts and data.get('confirm_exceptions') is not True:
         raise WfmError('Revisá y confirmá las advertencias antes de publicar: ' + '; '.join(alerts), 409)
@@ -1366,8 +1481,9 @@ def dispatch(db, actor, method, action, params, data=None, postgres=False):
           (plan_date, team, revision, int(operation == 'publish'), json.dumps(plan), actor['id'], timestamp))
     if operation == 'publish':
         _store_published_plan(query, plan_date, team, revision, plan, actor['id'], timestamp)
-    return dict(plan, revision=revision, published_revision=revision if operation == 'publish' else published_revision,
-                 people=people, requirements=requirements, weekly_schedule=weekly_schedule,
-                 settings=settings, window=TEAM_WINDOWS[team], horizon=HORIZON_SLOTS,
-                 exception_types=list(EXCEPTION_TYPES), coverage=coverage(plan, team),
-                 warnings=alerts)
+    return _plan_response(
+        plan, plan_date, team, revision,
+        revision if operation == 'publish' else published_revision,
+        people, requirements, requirements_revision(query, team), weekly_schedule, settings,
+        alert_messages=alerts,
+    )
