@@ -55,6 +55,7 @@ from .quotes import (
 )
 from .tolls import detect_toll_passes
 from .tile_proxy import TileProxyError, fetch_osm_tile
+from .arrival_times_api import register_arrival_times_routes
 from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
 from .dashboard import build_dashboard_payload
 from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
@@ -133,6 +134,27 @@ CREATE TABLE IF NOT EXISTS quotes(id BIGSERIAL PRIMARY KEY,task_number TEXT,orig
 NOTICE_EVENTS_SCHEMA="""
 CREATE TABLE IF NOT EXISTS notice_events(id BIGSERIAL PRIMARY KEY,notice_id BIGINT NOT NULL REFERENCES notices(id) ON DELETE CASCADE,event_type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT,previous_value TEXT,new_value TEXT,comment TEXT,created_at TIMESTAMPTZ NOT NULL);
 CREATE INDEX IF NOT EXISTS notice_events_notice_idx ON notice_events(notice_id,created_at DESC,id DESC);
+"""
+ARRIVAL_TIMES_SCHEMA="""
+CREATE TABLE IF NOT EXISTS arrival_times (
+    id BIGSERIAL PRIMARY KEY,
+    service TEXT NOT NULL,
+    department TEXT NOT NULL,
+    zone TEXT NOT NULL,
+    base_estimated_minutes INTEGER NOT NULL CHECK (base_estimated_minutes BETWEEN 1 AND 1440),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    seed_key TEXT UNIQUE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS arrival_times_active_unique_idx
+    ON arrival_times(lower(service),lower(department),lower(zone)) WHERE is_active=TRUE;
+CREATE INDEX IF NOT EXISTS arrival_times_filter_idx
+    ON arrival_times(department,service,is_active,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS arrival_times_status_idx
+    ON arrival_times(is_active,created_at DESC,id DESC);
 """
 TRANSFER_EVENTS_SCHEMA="""
 CREATE TABLE IF NOT EXISTS transfer_events(id BIGSERIAL PRIMARY KEY,transfer_id BIGINT NOT NULL REFERENCES scheduled_transfers(id) ON DELETE CASCADE,event_type TEXT NOT NULL,actor TEXT NOT NULL,previous_status TEXT,new_status TEXT,note TEXT,created_at TIMESTAMPTZ NOT NULL);
@@ -318,6 +340,8 @@ def initialize():
     with connect() as database:
         database.execute(SCHEMA)
         database.execute(NOTICE_EVENTS_SCHEMA)
+        database.execute(ARRIVAL_TIMES_SCHEMA)
+        database.execute("ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
         database.execute(TRANSFER_EVENTS_SCHEMA)
         database.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_id BIGINT")
         database.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_name TEXT")
@@ -355,6 +379,7 @@ def initialize():
             # se registran con una nueva versión para no invalidar instalaciones
             # existentes que ya conservaron su checksum original.
             ("postgres_core_v4", SCHEMA),
+            ("arrival_times_schema_v1", ARRIVAL_TIMES_SCHEMA),
             ("postgres_wfm_v2", WFM_SCHEMA),
             ("postgres_compat_v1", "quotes.toll_count,toll_details,toll_price;app_sessions.last_seen_at"),
         )
@@ -488,6 +513,16 @@ def initialize():
             supervisor=database.execute("SELECT id FROM roles WHERE name=%s",("Supervisor",)).fetchone()
             if supervisor:database.execute("INSERT INTO role_permissions(role_id,permission) VALUES(%s,%s) ON CONFLICT DO NOTHING",(supervisor["id"],"standards.approve"))
             database.execute("INSERT INTO schema_migrations(key,applied_at,checksum) VALUES(%s,%s,%s)",( "standards_workflow_v1",now(),hashlib.sha256(b"standards_workflow_v1").hexdigest()))
+        if not database.execute("SELECT 1 FROM schema_migrations WHERE key=%s", ("arrival_times_permissions_v1",)).fetchone():
+            for role_name in ("Supervisor", "Planificador"):
+                role = database.execute("SELECT id FROM roles WHERE name=%s", (role_name,)).fetchone()
+                if role:
+                    database.execute(
+                        "INSERT INTO role_permissions(role_id,permission) VALUES(%s,%s) ON CONFLICT DO NOTHING",
+                        (role["id"], "arrival_times.manage"),
+                    )
+            database.execute("INSERT INTO schema_migrations(key,applied_at,checksum) VALUES(%s,%s,%s)",
+                             ("arrival_times_permissions_v1",now(),hashlib.sha256(b"arrival_times_permissions_v1").hexdigest()))
         admin_id = role_ids["Administrador"]
         database.execute("DELETE FROM role_permissions WHERE role_id=%s", (admin_id,))
         execute_many(database,
@@ -545,6 +580,8 @@ def initialize():
             "transfer_workflow_v1": TRANSFER_EVENTS_SCHEMA,
             "notice_permissions_v1": "notice_permissions_v1",
             "standards_workflow_v1": "standards_workflow_v1",
+            "arrival_times_permissions_v1": "arrival_times_permissions_v1",
+            "arrival_times_schema_v1": ARRIVAL_TIMES_SCHEMA,
         }, placeholder="%s")
 
 
@@ -762,6 +799,7 @@ app = FastAPI(
     redoc_url="/redoc" if ENABLE_API_DOCS else None,
     openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
 )
+register_arrival_times_routes(app, connect, authorized, audit, now)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 

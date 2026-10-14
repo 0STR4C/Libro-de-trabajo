@@ -7,7 +7,7 @@ import { NoticesView, DelaysView } from './operations.jsx';
 import { QuoteView } from './quotes.jsx';
 import { TransfersView } from './transfers.jsx';
 import { SchedulesView } from './schedules.jsx';
-import { StandardsView } from './standards.jsx';
+import { ArrivalTimesView as StandardsView } from './arrival-times.jsx';
 import { SettingsView } from './settings.jsx';
 import { AuditView } from './audit.jsx';
 import { WfmView } from './wfm.jsx';
@@ -31,7 +31,7 @@ const initialFilters = () => ({
   delayAudit:{scope:'all',from:'',to:'',department:'',search:'',limit:50},
   transfers:{view:'active',from:'',to:'',status:'',type:'',task:'',provider:'',responsible:'',search:''},
   schedules:{view:'history',week:monday(),from:'',to:'',employee:'team',role:'',search:''},
-  standards:{department:'MONTEVIDEO',service:'',zone:''},
+  standards:{department:'',service:'',status:'all'},
   audit:{from:'',to:'',entity:'',entityId:'',action:'',actorId:'',search:'',limit:50},
   settings:{tab:'roles'}, wfm:{day:iso(new Date()),team:'Telefonista'}
 });
@@ -110,10 +110,9 @@ async function loadModel(page, filters, actor, actions) {
     return {...common,people,rows,requests,manager,canRequest:['Telefonista','Planificador','Supervisor'].includes(actor.role_name),userId:actor.id,currentRole:actor.role_name,currentWeek:monday(),filters:f,onApply:values=>update(values),onStateChange:values=>{filters.schedules={...filters.schedules,...values};},canExport:manager&&can('reports.export'),onExport:params=>report('schedules',params)};
   }
   if(page==='standards'){
-    const department=f.department;
-    const params=query({department,service:f.service,zone:f.zone});
-    const [rows,geo,guidance,zones,zoneCoverage]=await Promise.all([request('/api/standards'),fetch('/uruguay-departamentos.geojson').then(r=>r.json()),request(`/api/arrival-guidance?${params}`),request(`/api/zones?department=${encodeURIComponent(department)}`),request(`/api/zones-coverage?department=${encodeURIComponent(department)}`)]);
-    return {...common,rows,geo,department,zones,zoneCoverage,guidance,filters:f,departments:[...departments,'INTERIOR'],canPropose:can('standards.propose')||can('settings.manage'),canApprove:can('standards.approve'),canManage:can('settings.manage'),onDepartment:value=>update({department:value,zone:''}),onApply:values=>update(values),onClear:()=>update({service:'',zone:''})};
+    const arrivalQuery=offset=>query({department:f.department,service:f.service,is_active:f.status==='active'?true:f.status==='inactive'?false:null,limit:50,offset});
+    const [pageData,geography]=await Promise.all([request(`/api/arrival-times?${arrivalQuery(0)}`),request('/api/arrival-times/geography')]);
+    return {...common,page:pageData,geography,filters:f,canManage:can('arrival_times.manage'),onPage:offset=>request(`/api/arrival-times?${arrivalQuery(offset)}`),onApply:values=>update(values),onClear:()=>update({department:'',service:'',status:'all'})};
   }
   if(page==='settings'){
     const [users,roles,permissions,wfmSettings,google,quoteRules,tolls,version]=await Promise.all([f.tab==='users'?request('/api/settings/users'):null,['users','roles'].includes(f.tab)?request('/api/settings/roles'):Promise.resolve([]),f.tab==='roles'?request('/api/settings/permissions'):Promise.resolve([]),f.tab==='general'&&actor.role_name==='Administrador'?request('/api/wfm/settings'):null,f.tab==='google'?request('/api/settings/google-access'):null,f.tab==='quotes'?request('/api/settings/quote-rules'):null,f.tab==='catalogs'?request('/api/settings/tolls'):null,f.tab==='news'?request('/api/settings/version'):null]);
@@ -168,6 +167,6 @@ export function AppShell(){
   return <><a className="skip-link" href="#content">Saltar al contenido</a>{mobile&&<button className="sidebar-backdrop" aria-label="Cerrar navegación" onClick={()=>setMobile(false)}/>}
     <aside id="sidebar" aria-label="Navegación principal"><div className="sidebar-header"><div className="brand"><img src="/static/libro-trabajo.svg" alt="" width="46" height="46"/><div className="brand-text">Libro de<br/>Trabajo</div></div><button className="sidebar-toggle" type="button" aria-label={collapsed?'Expandir menú':'Contraer menú'} aria-expanded={!collapsed} onClick={()=>setCollapsed(value=>!value)}><i className="pi pi-angle-left"/></button></div><nav aria-label="Operación">{navMain.filter(can).map(navButton)}</nav><div className="sidebar-bottom">{visibleSupervision&&<div className="sidebar-supervision"><button className="sidebar-section-toggle" type="button" aria-expanded={supervision} onClick={()=>setSupervision(value=>!value)}><i className="pi pi-users"/><span>Supervisión</span></button>{supervision&&<div className="sidebar-submenu">{['supervision','delayAudit','wfm','audit'].filter(can).map(navButton)}</div>}</div>}{can('settings')&&navButton('settings')}</div></aside>
     <main id="prime-react-root"><header><div className="header-title"><button className="mobile-nav-toggle" type="button" aria-label="Abrir navegación" onClick={()=>setMobile(true)}>☰</button><div><h1>{names[page]}</h1></div></div><div className="header-actions"><div className="profile-control"><button className="user-button" type="button" aria-haspopup="dialog" aria-expanded={profile} onClick={()=>setProfile(value=>!value)}><i className="pi pi-user"/><span>{actor.display_name}</span><i className="pi pi-chevron-down profile-chevron"/></button>{profile&&<div className="profile-popover" role="dialog" aria-label="Perfil de usuario"><span>Sesión iniciada como</span><strong>{actor.display_name}</strong><small>{actor.role_name}</small><div className="profile-theme-row"><span>Apariencia</span><label className="theme-native-control"><i className="pi pi-palette"/><select aria-label="Cambiar tema visual" value={theme} onChange={event=>setTheme(event.target.value)}><option value="light">Claro</option><option value="dark">Oscuro</option><option value="system">Sistema</option></select></label></div></div>}</div><button className="logout-button tw-text-red-600 tw-bg-red-50 hover:tw-bg-red-100" type="button" onClick={()=>setLogout(true)}><i className="pi pi-sign-out"/><span>Salir</span></button></div></header>
-      <section id="content" role="region" tabIndex="-1">{Object.keys(models).map(target=>{const View=memoizedComponents[target];return <div key={target} className={`operational-view tw-min-w-0 tw-w-full ${page!==target?'tw-hidden':''}`} hidden={page!==target} aria-hidden={page!==target}><View model={models[target]}/></div>;})}{loading[page]&&!models[page]&&<div className="page-loading tw-flex tw-items-center tw-gap-3" role="status"><ProgressSpinner style={{width:28,height:28}} strokeWidth="5"/>Cargando información…</div>}{errors[page]&&<div className="panel empty load-error" role="alert"><strong>No se pudo cargar esta pantalla</strong><p>{errors[page]}</p><Button label="Reintentar" onClick={()=>refresh(page)}/></div>}</section>
+      <section id="content" role="region" tabIndex="-1">{Object.keys(models).map(target=>{const View=memoizedComponents[target];return <div key={target} className={`operational-view tw-min-w-0 tw-w-full ${page!==target?'tw-hidden':''}`} hidden={page!==target} aria-hidden={page!==target}><View model={models[target]} active={page===target}/></div>;})}{loading[page]&&!models[page]&&<div className="page-loading tw-flex tw-items-center tw-gap-3" role="status"><ProgressSpinner style={{width:28,height:28}} strokeWidth="5"/>Cargando información…</div>}{errors[page]&&<div className="panel empty load-error" role="alert"><strong>No se pudo cargar esta pantalla</strong><p>{errors[page]}</p><Button label="Reintentar" onClick={()=>refresh(page)}/></div>}</section>
     </main>{logout&&<LogoutDialog model={{confirm:signOut,cancel:()=>setLogout(false)}}/>}{message&&<div id="toast" className={`show ${message.kind}`} role={message.kind==='error'?'alert':'status'}>{message.value}</div>}</>;
 }

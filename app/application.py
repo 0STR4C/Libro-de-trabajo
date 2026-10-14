@@ -34,6 +34,7 @@ PERMISSIONS = {
     "quotes.view": "Ver cotizador e historial",
     "quotes.create": "Generar cotizaciones",
     "standards.view": "Ver tiempos de arribo",
+    "arrival_times.manage": "Crear y editar tiempos base de arribo",
     "standards.propose": "Proponer referencias de arribo",
     "standards.approve": "Aprobar referencias de arribo",
     "audit.view": "Ver registro de auditoría",
