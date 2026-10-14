@@ -36,6 +36,8 @@ test('cambio de año, turno nocturno, descanso, excepción y personas inactivas'
   assert.equal(indexed.byPersonDay.get('81:2026-12-28')[0].continuation, true);
   assert.equal(indexed.byPersonDay.get('81:2026-12-28')[0].row.break_slot, 50);
   assert.equal(indexed.byPersonDay.get('81:2026-12-28')[0].row.exceptions[0].start, 52);
+  const weekRows = [night].filter(row => row.schedule_date >= '2026-12-28' && row.schedule_date <= '2027-01-03');
+  assert.deepEqual(schedulePeople([{ id: 1, display_name: 'Activa' }], weekRows).map(person => person.id), [1]);
   assert.deepEqual(schedulePeople([{ id: 1, display_name: 'Activa' }], [night]).map(person => person.id), [1, 81]);
 });
 

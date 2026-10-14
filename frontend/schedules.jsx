@@ -92,7 +92,7 @@ export function SchedulesView({ model }) {
   const clear = () => apply({ view: 'history', week: model.currentWeek, from: '', to: '', employee: 'team', role: '', search: '' });
   const days = Array.from({ length: 7 }, (_, index) => shift(filters.week, index));
   const rangeRows = useMemo(() => filters.view === 'week' ? rows.filter(row => scheduleDay(row.schedule_date) >= days[0] && scheduleDay(row.schedule_date) <= days[6]) : rows, [rows, filters.view, filters.week]);
-  const people = useMemo(() => schedulePeople(model.people, rangeRows), [model.people, rangeRows]);
+  const people = useMemo(() => schedulePeople(model.people, rows), [model.people, rows]);
   const scheduleIndex = useMemo(() => indexSchedules(rows), [rows]);
   const visiblePeople = people.filter(person => (filters.employee === 'team' || filters.employee === 'mine' && Number(person.id) === Number(model.userId) || Number(person.id) === Number(filters.employee)) && (!filters.role || person.role_name === filters.role) && (!filters.search || scheduleIndex.peopleWithRows.has(Number(person.id)) || person.display_name?.toLocaleLowerCase().includes(filters.search.toLocaleLowerCase())));
   const requestsByDay = useMemo(() => { const index = new Map(); for (const item of requests) { const day = dayISO(item.requested_date); if (!index.has(day)) index.set(day, []); index.get(day).push(item); } return index; }, [requests]);

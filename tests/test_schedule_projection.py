@@ -8,7 +8,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app import wfm
-from app.scheduling import schedule_interval
+from app.scheduling import find_schedule_conflict, schedule_interval
 
 
 class ScheduleProjectionTests(unittest.TestCase):
@@ -86,6 +86,20 @@ class ScheduleProjectionTests(unittest.TestCase):
         self.assertEqual((first.isoformat(), last.isoformat()),
                          ('2026-12-31T22:00:00', '2027-01-01T06:00:00'))
         self.assertEqual(schedule_interval('2027-01-01', '08:00', '12:00')[0].day, 1)
+
+    def test_multiple_daily_records_and_overnight_conflicts(self):
+        records = [dict(id=1, schedule_date='2026-12-31', shift_name='Mañana',
+                        start_time='08:00', end_time='12:00')]
+        self.assertIsNone(find_schedule_conflict(records, '2026-12-31', 'Tarde',
+                                                 '14:00', '18:00'))
+        self.assertEqual(find_schedule_conflict(records, '2026-12-31', 'Mediodía',
+                                                '11:00', '15:00')[0], 'overlap')
+        night = dict(id=2, schedule_date='2026-12-31', shift_name='Noche',
+                     start_time='22:00', end_time='06:00')
+        self.assertEqual(find_schedule_conflict([night], '2027-01-01', 'Temprano',
+                                                '05:00', '08:00')[0], 'overlap')
+        self.assertIsNone(find_schedule_conflict([night], '2027-01-01', 'Mañana',
+                                                 '08:00', '12:00'))
 
 
 @unittest.skipUnless(os.getenv('DATABASE_URL'), 'requiere PostgreSQL temporal')
