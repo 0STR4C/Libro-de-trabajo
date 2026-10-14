@@ -12,6 +12,8 @@ import { SettingsView } from './settings.jsx';
 import { AuditView } from './audit.jsx';
 import { WfmView } from './wfm.jsx';
 import { LoginView, LogoutDialog } from './login.jsx';
+import { affectedViews } from './operational-invalidation.js';
+import { requestDeadline, requestTimeoutError } from './request-deadline.js';
 
 const departments = ['ARTIGAS','CANELONES','CERRO LARGO','COLONIA','DURAZNO','FLORES','FLORIDA','LAVALLEJA','MALDONADO','MONTEVIDEO','PAYSANDÚ','RÍO NEGRO','RIVERA','ROCHA','SALTO','SAN JOSÉ','SORIANO','TACUAREMBÓ','TREINTA Y TRES'];
 const services = ['GRÚA','ML','SINIESTROS'];
@@ -43,25 +45,53 @@ function errorText(value, fallback='No se pudo completar la operación') {
   return fallback;
 }
 const cookie = name => document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith(`${name}=`))?.slice(name.length+1)||'';
-async function request(url, options={}) {
+let sessionGeneration=0;
+const pendingRequests=new Set();
+function invalidateSessionRequests(){
+  sessionGeneration+=1;
+  for(const controller of pendingRequests)controller.abort();
+  pendingRequests.clear();
+}
+async function sendRequest(url, options={}) {
+  const generation=sessionGeneration,controller=new AbortController();
+  pendingRequests.add(controller);
   const method=(options.method||'GET').toUpperCase();
+  const changesData=['POST','PUT','PATCH','DELETE'].includes(method);
+  const deadline=requestDeadline(controller);
   const token = ['POST','PUT','PATCH','DELETE'].includes(method) ? cookie('centro_csrf') : '';
-  const response=await fetch(url,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(token?{'X-CSRF-Token':decodeURIComponent(token)}:{}),...options.headers}});
-  const raw=await response.text();
+  let response,raw;
+  try{
+    response=await fetch(url,{credentials:'same-origin',...options,signal:controller.signal,headers:{'Content-Type':'application/json',...(token?{'X-CSRF-Token':decodeURIComponent(token)}:{}),...options.headers}});
+    raw=await response.text();
+  }catch(error){
+    if(generation!==sessionGeneration)throw Object.assign(new Error('La sesión cambió'),{stale:true});
+    if(deadline.expired())throw requestTimeoutError(changesData);
+    if(changesData)throw Object.assign(new Error('No se pudo confirmar si el cambio se guardó. Consultá el estado actual antes de volver a intentarlo.'),{uncertain:true,cause:error});
+    throw error;
+  }finally{deadline.clear();pendingRequests.delete(controller);}
+  if(generation!==sessionGeneration)throw Object.assign(new Error('La sesión cambió'),{stale:true});
   let payload=null; if(raw) try { payload=JSON.parse(raw); } catch { /* Error handled below. */ }
   if(response.status===401 && !['/api/auth/me','/api/auth/login'].includes(url))window.dispatchEvent(new Event('libro:unauthorized'));
-  if(!response.ok){const failure=new Error(errorText(payload?.detail,`Error de operación (${response.status})`));failure.status=response.status;throw failure;}
+  if(!response.ok){const failure=new Error(errorText(payload?.detail,`Error de operación (${response.status})`));failure.status=response.status;failure.payload=payload;throw failure;}
   if(raw && payload===null) throw new Error('El servidor respondió con un formato inesperado');
+  if(['POST','PUT','PATCH','DELETE'].includes(method) && /^\/api\/(?:notices|delays|transfers|arrival-times|schedules|wfm)(?:\/|$)/.test(url)) window.dispatchEvent(new CustomEvent('libro:operational-change',{detail:{url,method}}));
   return payload;
 }
 
 async function download(kind, filters, notify) {
+  const generation=sessionGeneration;
+  const controller=new AbortController(),deadline=requestDeadline(controller);
+  pendingRequests.add(controller);
   try {
-    const response=await fetch(`/api/reports/${kind}.csv?${filters}`,{credentials:'same-origin'});
+    const response=await fetch(`/api/reports/${kind}.csv?${filters}`,{credentials:'same-origin',signal:controller.signal});
+    if(generation!==sessionGeneration)return;
     if(!response.ok) throw new Error(errorText((await response.json()).detail,'No se pudo descargar el reporte'));
-    const link=document.createElement('a'),url=URL.createObjectURL(await response.blob());
+    const blob=await response.blob();
+    if(generation!==sessionGeneration)return;
+    const link=document.createElement('a'),url=URL.createObjectURL(blob);
     link.href=url;link.download=`reporte_${kind}_${iso(new Date())}.csv`;document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);notify('Reporte descargado');
-  } catch(error){notify(error.message,'error');}
+  } catch(error){if(generation===sessionGeneration)notify(deadline.expired()?requestTimeoutError(false).message:error.message,'error');}
+  finally{deadline.clear();pendingRequests.delete(controller);}
 }
 
 function pageQuery(page, filter) {
@@ -75,12 +105,14 @@ function pageQuery(page, filter) {
 }
 
 async function loadModel(page, filters, actor, actions) {
+  const generation=sessionGeneration;
+  const request=(url,options)=>generation===sessionGeneration?sendRequest(url,options):Promise.reject(Object.assign(new Error('La sesión cambió'),{stale:true}));
   const can = action => actor.permissions?.includes(action);
   const currentUser=actor.display_name;
-  const common={request:request,refresh:()=>actions.refresh(page),currentUser};
+  const common={request,refresh:()=>generation===sessionGeneration?actions.refresh(page):Promise.resolve(false),currentUser};
   const f=filters[page];
   const parameters=pageQuery(page,f);
-  const update=(next, target=page)=>{filters[target]={...filters[target],...next};return actions.refresh(target);};
+  const update=(next, target=page)=>{if(generation!==sessionGeneration)return Promise.resolve(false);filters[target]={...filters[target],...next};return actions.refresh(target);};
   const report=(kind=page, params=parameters)=>download(kind,params,actions.notify);
   if(page==='notices'){
     const result=await request(`/api/notices/page?${query({...Object.fromEntries(parameters),offset:0})}`);
@@ -88,13 +120,30 @@ async function loadModel(page, filters, actor, actions) {
   }
   if(page==='dashboard'||page==='supervision'){
     if(page==='supervision')return {dashboard:await request('/api/dashboard'),statusLabel};
-    const [dashboard,geo,activeDelays,alerts]=await Promise.all([request('/api/dashboard'),fetch('/uruguay-departamentos.geojson').then(r=>r.json()),can('delays.view')?request('/api/delays?scope=current'):Promise.resolve([]),can('delays.view')&&can('standards.view')?request('/api/operational-alerts').catch(()=>[]):Promise.resolve([])]);
-    return {dashboard,geo,activeDelays:activeDelays.filter(row=>row.is_current),alerts,showAlerts:can('delays.view')&&can('standards.view'),currentUser,statusLabel};
+    const previous=actions.previous||{},showAlerts=can('delays.view')&&can('standards.view');
+    const [mapResult,geoResult,alertsResult]=await Promise.allSettled([
+      request('/api/dashboard/map-stats'),
+      previous.geo?Promise.resolve(previous.geo):request('/uruguay-departamentos.geojson'),
+      showAlerts?request('/api/operational-alerts'):Promise.resolve([])
+    ]);
+    const mapReady=mapResult.status==='fulfilled'&&geoResult.status==='fulfilled';
+    const alertsReady=alertsResult.status==='fulfilled';
+    return {...common,
+      geo:geoResult.status==='fulfilled'?geoResult.value:previous.geo||null,
+      mapStats:mapResult.status==='fulfilled'?mapResult.value:previous.mapStats||null,
+      mapStatus:mapReady?'ready':'error',
+      mapError:mapReady?'':mapResult.status==='rejected'?mapResult.reason.message:geoResult.reason.message,
+      alerts:alertsReady?alertsResult.value:previous.alerts||[],
+      alertsStatus:!showAlerts?'hidden':alertsReady?(alertsResult.value.length?'ready':'empty'):'error',
+      alertsError:alertsReady?'':alertsResult.reason.message,
+      alertsUpdatedAt:alertsReady?new Date().toISOString():previous.alertsUpdatedAt||null,
+      showAlerts,currentUser,statusLabel};
   }
   if(page==='quotes') return {...common,draftKey:`centroQuoteDraft:${actor.id||currentUser}`,canCreate:can('quotes.create'),canExport:can('reports.export'),onExport:values=>report('quotes',query({q:values.search,coverage:values.coverage,mode:values.mode}))};
   if(page==='delays'){
-    const pageData=await request(`/api/delays/page?${parameters}`);
-    return {...common,page:pageData,onPage:(offset,limit=filters.delays.limit||50)=>{filters.delays.limit=limit;return request(`/api/delays/page?${query({...Object.fromEntries(pageQuery('delays',filters.delays)),offset})}`);},filters:f,viewOptions:[{label:'Vigentes verificadas',value:'active'},{label:'Requieren revisión',value:'review'},{label:'Normalizadas / histórico',value:'history'},{label:'Todas',value:'all'}],departmentOptions:options(departments,'Todos los departamentos'),serviceOptions:options(services,'Todas las prestaciones'),canExport:can('reports.export'),canCreate:can('delays.create'),canNormalize:can('delays.normalize'),onApply:values=>update(values),onClear:()=>update({view:'active',from:'',to:'',department:'',service:'',search:''}),onExport:()=>report('delays')};
+    if(!can('delays.view'))throw new Error('Acceso denegado a Zonas con demora');
+    const [pageData,geography]=await Promise.all([request(`/api/delays?${parameters}`),request('/api/delays/geography')]);
+    return {...common,page:pageData,geography,filters:f,viewOptions:[{label:'Vigentes verificadas',value:'active'},{label:'Requieren revisión',value:'review'},{label:'Normalizadas / histórico',value:'history'},{label:'Todas',value:'all'}],departmentOptions:options(Object.keys(geography),'Todos los departamentos'),serviceOptions:options(services,'Todas las prestaciones'),canExport:can('reports.export'),canCreate:can('delays.create'),canNormalize:can('delays.normalize'),onApply:values=>update(values),onClear:()=>update({view:'active',from:'',to:'',department:'',service:'',search:''}),onExport:()=>report('delays')};
   }
   if(page==='delayAudit'){
     const pageData=await request(`/api/delays/page?${parameters}`);
@@ -137,28 +186,84 @@ function applyTheme(value){const selected=['light','dark','system'].includes(val
 
 export function AppShell(){
   const [actor,setActor]=useState(null),[booting,setBooting]=useState(true),[page,setPage]=useState('dashboard'),[models,setModels]=useState({}),[loading,setLoading]=useState({}),[errors,setErrors]=useState({}),[profile,setProfile]=useState(false),[logout,setLogout]=useState(false),[supervision,setSupervision]=useState(false),[collapsed,setCollapsed]=useState(()=>localStorage.getItem('sidebarCollapsed')==='true'),[mobile,setMobile]=useState(false),[theme,setTheme]=useState(()=>localStorage.getItem(themeKey)||'system'),[message,setMessage]=useState(null);
+  const logoutTrigger = useRef(null);
   const filters=useRef(initialFilters()),actorRef=useRef(null),pageRef=useRef('dashboard'),sequence=useRef({}),notificationTimer=useRef(null);
+  const modelsRef=useRef({}),dashboardFlight=useRef(null),dashboardQueued=useRef(false),dirtyViews=useRef(new Set());
   const notify=useCallback((value,kind='success')=>{setMessage({value,kind});clearTimeout(notificationTimer.current);notificationTimer.current=setTimeout(()=>setMessage(null),kind==='error'?5500:3200);},[]);
   const navigate=useCallback(next=>{pageRef.current=next;setPage(next);setMobile(false);setProfile(false);if(['supervision','delayAudit','audit','wfm'].includes(next))setSupervision(true);},[]);
-  const refresh=useCallback(async(target=pageRef.current)=>{
-    const user=actorRef.current;if(!user)return;
+  const refresh=useCallback((target=pageRef.current)=>{
+    const user=actorRef.current;if(!user)return Promise.resolve(false);
+    if(target==='dashboard'&&dashboardFlight.current){
+      dashboardQueued.current=true;
+      sequence.current.dashboard=(sequence.current.dashboard||0)+1;
+      return dashboardFlight.current;
+    }
     const index=(sequence.current[target]||0)+1;sequence.current[target]=index;
+    const generation=sessionGeneration;
     setLoading(current=>({...current,[target]:true}));setErrors(current=>({...current,[target]:null}));
-    try{const model=await loadModel(target,filters.current,user,{refresh,navigate,notify});if(sequence.current[target]===index)setModels(current=>({...current,[target]:model}));return true;}
-    catch(error){if(error.status===401){actorRef.current=null;setActor(null);setModels({});return false;}if(sequence.current[target]===index)setErrors(current=>({...current,[target]:error.message}));return false;}
-    finally{if(sequence.current[target]===index)setLoading(current=>({...current,[target]:false}));}
+    const task=(async()=>{
+      try{
+        const model=await loadModel(target,filters.current,user,{refresh,navigate,notify,previous:modelsRef.current[target]});
+        if(sequence.current[target]===index&&sessionGeneration===generation){
+          dirtyViews.current.delete(target);
+          modelsRef.current={...modelsRef.current,[target]:model};
+          setModels(current=>({...current,[target]:model}));
+        }
+        return true;
+      }catch(error){
+        if(error.stale||sessionGeneration!==generation)return false;
+        if(error.status===401){actorRef.current=null;modelsRef.current={};setActor(null);setModels({});return false;}
+        if(sequence.current[target]===index)setErrors(current=>({...current,[target]:error.message}));
+        return false;
+      }finally{if(sequence.current[target]===index&&sessionGeneration===generation)setLoading(current=>({...current,[target]:false}));}
+    })();
+    if(target==='dashboard'){
+      dashboardFlight.current=task;
+      task.finally(()=>{
+        if(dashboardFlight.current===task)dashboardFlight.current=null;
+        if(dashboardQueued.current){
+          dashboardQueued.current=false;
+          if(pageRef.current==='dashboard'&&document.visibilityState==='visible'&&actorRef.current)refresh('dashboard');
+          else setLoading(current=>({...current,dashboard:false}));
+        }
+      });
+    }
+    return task;
   },[navigate,notify]);
-  useEffect(()=>{window.toast=notify;request('/api/auth/me').then(user=>{actorRef.current=user;setActor(user);}).catch(()=>{actorRef.current=null;setActor(null);}).finally(()=>setBooting(false));return()=>{delete window.toast;clearTimeout(notificationTimer.current);};},[notify]);
-  useEffect(()=>{const expired=()=>{actorRef.current=null;setModels({});setActor(null);setLogout(false);};window.addEventListener('libro:unauthorized',expired);return()=>window.removeEventListener('libro:unauthorized',expired);},[]);
-  useEffect(()=>{if(actor&&!models[page])refresh(page);},[actor,page,refresh]);
+  useEffect(()=>{window.toast=notify;sendRequest('/api/auth/me').then(user=>{actorRef.current=user;setActor(user);}).catch(()=>{actorRef.current=null;setActor(null);}).finally(()=>setBooting(false));return()=>{delete window.toast;clearTimeout(notificationTimer.current);};},[notify]);
+  useEffect(()=>{const expired=()=>{invalidateSessionRequests();sequence.current={};dashboardFlight.current=null;dashboardQueued.current=false;dirtyViews.current.clear();actorRef.current=null;modelsRef.current={};setModels({});setLoading({});setErrors({});setMessage(null);setActor(null);setLogout(false);};window.addEventListener('libro:unauthorized',expired);return()=>window.removeEventListener('libro:unauthorized',expired);},[]);
+  useEffect(()=>{if(!actor)return;if(page==='dashboard'){if(document.visibilityState==='visible')refresh('dashboard');}else if(!modelsRef.current[page]||dirtyViews.current.has(page))refresh(page);},[actor,page,refresh]);
+  useEffect(()=>{
+    if(!actor||page!=='dashboard')return;
+    let timer=null;
+    const sync=()=>{
+      if(timer){clearInterval(timer);timer=null;}
+      if(document.visibilityState==='visible'){
+        timer=setInterval(()=>refresh('dashboard'),60000);
+      }
+    };
+    const becameVisible=()=>{const wasHidden=!timer;sync();if(wasHidden&&document.visibilityState==='visible')refresh('dashboard');};
+    sync();document.addEventListener('visibilitychange',becameVisible);
+    return()=>{if(timer)clearInterval(timer);document.removeEventListener('visibilitychange',becameVisible);};
+  },[actor,page,refresh]);
+  useEffect(()=>{const changed=event=>{
+    const affected=affectedViews(event.detail?.url||'');
+    const refreshNow=affected.includes(pageRef.current)&&document.visibilityState==='visible';
+    affected.forEach(target=>{
+      dirtyViews.current.add(target);
+      if(!refreshNow||target!==pageRef.current)sequence.current[target]=(sequence.current[target]||0)+1;
+    });
+    if(refreshNow)refresh(pageRef.current);
+  };window.addEventListener('libro:operational-change',changed);return()=>window.removeEventListener('libro:operational-change',changed);},[refresh]);
   useEffect(()=>{applyTheme(theme);try{localStorage.setItem(themeKey,theme);}catch{}const media=window.matchMedia('(prefers-color-scheme: dark)'),listener=()=>{if(theme==='system')applyTheme('system');};media.addEventListener?.('change',listener);return()=>media.removeEventListener?.('change',listener);},[theme]);
   useEffect(()=>{document.body.classList.toggle('sidebar-collapsed',collapsed);try{localStorage.setItem('sidebarCollapsed',String(collapsed));}catch{}},[collapsed]);
   useEffect(()=>{const viewport=window.matchMedia('(max-width: 900px)'),sync=()=>{document.body.classList.toggle('mobile-viewport',viewport.matches);if(!viewport.matches)setMobile(false);};sync();viewport.addEventListener?.('change',sync);return()=>viewport.removeEventListener?.('change',sync);},[]);
   useEffect(()=>{document.body.classList.toggle('mobile-nav-open',mobile);},[mobile]);
   useEffect(()=>{document.body.classList.toggle('auth-locked',!actor);},[actor]);
   useEffect(()=>{const close=event=>{if(event.key==='Escape'||event.type==='click'&&!(event.target instanceof Element&&event.target.closest('.profile-control')))setProfile(false);};document.addEventListener('click',close);document.addEventListener('keydown',close);return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',close);};},[]);
-  const signIn=async credentials=>{await request('/api/auth/login',{method:'POST',body:JSON.stringify(credentials)});const user=await request('/api/auth/me');actorRef.current=user;filters.current=initialFilters();setModels({});navigate('dashboard');setActor(user);};
-  const signOut=async()=>{await request('/api/auth/logout',{method:'POST',body:'{}'});actorRef.current=null;filters.current=initialFilters();setModels({});setLogout(false);setActor(null);};
+  const signIn=async credentials=>{invalidateSessionRequests();await sendRequest('/api/auth/login',{method:'POST',body:JSON.stringify(credentials)});const user=await sendRequest('/api/auth/me');sequence.current={};dashboardFlight.current=null;dashboardQueued.current=false;dirtyViews.current.clear();actorRef.current=user;filters.current=initialFilters();modelsRef.current={};setModels({});setLoading({});setErrors({});setMessage(null);navigate('dashboard');setActor(user);};
+  const signOut=async()=>{invalidateSessionRequests();await sendRequest('/api/auth/logout',{method:'POST',body:'{}'});sequence.current={};dashboardFlight.current=null;dashboardQueued.current=false;dirtyViews.current.clear();actorRef.current=null;filters.current=initialFilters();modelsRef.current={};setModels({});setLoading({});setErrors({});setMessage(null);setLogout(false);setActor(null);};
+  const cancelLogout=()=>{setLogout(false);window.requestAnimationFrame(()=>{if(logoutTrigger.current?.isConnected)logoutTrigger.current.focus();});};
   const can=target=>Boolean(actor?.permissions?.includes(permission[target]))&&(!['supervision','delayAudit','wfm'].includes(target)||['Supervisor','Administrador'].includes(actor?.role_name));
   const visibleSupervision=['supervision','delayAudit','wfm','audit'].some(can);
   const navButton=target=><button key={target} type="button" data-page={target} className={`${target==='settings'?'settings-button ':''}${page===target?'active':''}`} aria-current={page===target?'page':undefined} onClick={()=>navigate(target)}><i className={`pi ${icons[target]}`} aria-hidden="true"/><span>{target==='dashboard'?'Resumen':target==='delays'?'Zonas con demora':target==='schedules'?'Horarios':target==='standards'?'Tiempos de arribo':target==='supervision'?'Dashboard':target==='delayAudit'?'Auditoría de demoras':target==='wfm'?'Planificación de horarios':target==='audit'?'Auditoría general':target==='settings'?'Configuración':target==='notices'?'Avisos':target==='quotes'?'Cotizador':'Programados'}</span></button>;
@@ -166,7 +271,7 @@ export function AppShell(){
   if(!actor)return <LoginView model={{login:signIn}}/>;
   return <><a className="skip-link" href="#content">Saltar al contenido</a>{mobile&&<button className="sidebar-backdrop" aria-label="Cerrar navegación" onClick={()=>setMobile(false)}/>}
     <aside id="sidebar" aria-label="Navegación principal"><div className="sidebar-header"><div className="brand"><img src="/static/libro-trabajo.svg" alt="" width="46" height="46"/><div className="brand-text">Libro de<br/>Trabajo</div></div><button className="sidebar-toggle" type="button" aria-label={collapsed?'Expandir menú':'Contraer menú'} aria-expanded={!collapsed} onClick={()=>setCollapsed(value=>!value)}><i className="pi pi-angle-left"/></button></div><nav aria-label="Operación">{navMain.filter(can).map(navButton)}</nav><div className="sidebar-bottom">{visibleSupervision&&<div className="sidebar-supervision"><button className="sidebar-section-toggle" type="button" aria-expanded={supervision} onClick={()=>setSupervision(value=>!value)}><i className="pi pi-users"/><span>Supervisión</span></button>{supervision&&<div className="sidebar-submenu">{['supervision','delayAudit','wfm','audit'].filter(can).map(navButton)}</div>}</div>}{can('settings')&&navButton('settings')}</div></aside>
-    <main id="prime-react-root"><header><div className="header-title"><button className="mobile-nav-toggle" type="button" aria-label="Abrir navegación" onClick={()=>setMobile(true)}>☰</button><div><h1>{names[page]}</h1></div></div><div className="header-actions"><div className="profile-control"><button className="user-button" type="button" aria-haspopup="dialog" aria-expanded={profile} onClick={()=>setProfile(value=>!value)}><i className="pi pi-user"/><span>{actor.display_name}</span><i className="pi pi-chevron-down profile-chevron"/></button>{profile&&<div className="profile-popover" role="dialog" aria-label="Perfil de usuario"><span>Sesión iniciada como</span><strong>{actor.display_name}</strong><small>{actor.role_name}</small><div className="profile-theme-row"><span>Apariencia</span><label className="theme-native-control"><i className="pi pi-palette"/><select aria-label="Cambiar tema visual" value={theme} onChange={event=>setTheme(event.target.value)}><option value="light">Claro</option><option value="dark">Oscuro</option><option value="system">Sistema</option></select></label></div></div>}</div><button className="logout-button tw-text-red-600 tw-bg-red-50 hover:tw-bg-red-100" type="button" onClick={()=>setLogout(true)}><i className="pi pi-sign-out"/><span>Salir</span></button></div></header>
-      <section id="content" role="region" tabIndex="-1">{Object.keys(models).map(target=>{const View=memoizedComponents[target];return <div key={target} className={`operational-view tw-min-w-0 tw-w-full ${page!==target?'tw-hidden':''}`} hidden={page!==target} aria-hidden={page!==target}><View model={models[target]} active={page===target}/></div>;})}{loading[page]&&!models[page]&&<div className="page-loading tw-flex tw-items-center tw-gap-3" role="status"><ProgressSpinner style={{width:28,height:28}} strokeWidth="5"/>Cargando información…</div>}{errors[page]&&<div className="panel empty load-error" role="alert"><strong>No se pudo cargar esta pantalla</strong><p>{errors[page]}</p><Button label="Reintentar" onClick={()=>refresh(page)}/></div>}</section>
-    </main>{logout&&<LogoutDialog model={{confirm:signOut,cancel:()=>setLogout(false)}}/>}{message&&<div id="toast" className={`show ${message.kind}`} role={message.kind==='error'?'alert':'status'}>{message.value}</div>}</>;
+    <main id="prime-react-root"><header><div className="header-title"><button className="mobile-nav-toggle" type="button" aria-label="Abrir navegación" onClick={()=>setMobile(true)}>☰</button><div><h1>{names[page]}</h1></div></div><div className="header-actions"><div className="profile-control"><button className="user-button" type="button" aria-haspopup="dialog" aria-expanded={profile} onClick={()=>setProfile(value=>!value)}><i className="pi pi-user"/><span>{actor.display_name}</span><i className="pi pi-chevron-down profile-chevron"/></button>{profile&&<div className="profile-popover" role="dialog" aria-label="Perfil de usuario"><span>Sesión iniciada como</span><strong>{actor.display_name}</strong><small>{actor.role_name}</small><div className="profile-theme-row"><span>Apariencia</span><label className="theme-native-control"><i className="pi pi-palette"/><select aria-label="Cambiar tema visual" value={theme} onChange={event=>setTheme(event.target.value)}><option value="light">Claro</option><option value="dark">Oscuro</option><option value="system">Sistema</option></select></label></div></div>}</div><button className="logout-button tw-text-red-600 tw-bg-red-50 hover:tw-bg-red-100" type="button" onClick={event=>{logoutTrigger.current=event.currentTarget;setLogout(true);}}><i className="pi pi-sign-out"/><span>Salir</span></button></div></header>
+      <section id="content" role="region" tabIndex="-1">{Object.keys(models).map(target=>{const View=memoizedComponents[target],viewModel=target==='dashboard'?{...models[target],refreshing:Boolean(loading.dashboard)}:models[target];return <div key={target} className={`operational-view tw-min-w-0 tw-w-full ${page!==target?'tw-hidden':''}`} hidden={page!==target} aria-hidden={page!==target}><View model={viewModel} active={page===target}/></div>;})}{loading[page]&&!models[page]&&<div className="page-loading tw-flex tw-items-center tw-gap-3" role="status"><ProgressSpinner style={{width:28,height:28}} strokeWidth="5"/>Cargando información…</div>}{errors[page]&&<div className="panel empty load-error" role="alert"><strong>No se pudo cargar esta pantalla</strong><p>{errors[page]}</p><Button label="Reintentar" onClick={()=>refresh(page)}/></div>}</section>
+    </main>{logout&&<LogoutDialog model={{confirm:signOut,cancel:cancelLogout}}/>}{message&&<div id="toast" className={`show ${message.kind}`} role={message.kind==='error'?'alert':'status'}>{message.value}</div>}</>;
 }

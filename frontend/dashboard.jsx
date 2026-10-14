@@ -1,13 +1,24 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Button } from 'primereact/button';
 import { Card } from 'primereact/card';
 import { OverlayPanel } from 'primereact/overlaypanel';
 import { Tag } from 'primereact/tag';
+import { formatDateTime } from './date-format.js';
+import { departmentAt, nextReviewDeadline } from './delay-map-state.js';
 
 const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toUpperCase();
-const colors = ['#eef5fb', '#dcecf8', '#bddcf1', '#8fc2e3', '#5aa2cf', '#267bb3'];
-const neighbors = { ARTIGAS: ['SALTO', 'RIVERA'], CANELONES: ['MONTEVIDEO', 'SAN JOSE', 'FLORIDA', 'LAVALLEJA', 'MALDONADO'], 'CERRO LARGO': ['RIVERA', 'TACUAREMBO', 'DURAZNO', 'TREINTA Y TRES'], COLONIA: ['SORIANO', 'FLORES', 'SAN JOSE'], DURAZNO: ['TACUAREMBO', 'CERRO LARGO', 'TREINTA Y TRES', 'FLORIDA', 'FLORES', 'RIO NEGRO'], FLORES: ['SORIANO', 'RIO NEGRO', 'DURAZNO', 'FLORIDA', 'SAN JOSE', 'COLONIA'], FLORIDA: ['DURAZNO', 'TREINTA Y TRES', 'LAVALLEJA', 'CANELONES', 'SAN JOSE', 'FLORES'], LAVALLEJA: ['TREINTA Y TRES', 'ROCHA', 'MALDONADO', 'CANELONES', 'FLORIDA'], MALDONADO: ['LAVALLEJA', 'ROCHA', 'CANELONES'], MONTEVIDEO: ['CANELONES', 'SAN JOSE'], PAYSANDU: ['SALTO', 'TACUAREMBO', 'RIO NEGRO'], 'RIO NEGRO': ['PAYSANDU', 'TACUAREMBO', 'DURAZNO', 'FLORES', 'SORIANO'], RIVERA: ['ARTIGAS', 'SALTO', 'TACUAREMBO', 'CERRO LARGO'], ROCHA: ['TREINTA Y TRES', 'LAVALLEJA', 'MALDONADO'], SALTO: ['ARTIGAS', 'RIVERA', 'TACUAREMBO', 'PAYSANDU'], 'SAN JOSE': ['COLONIA', 'FLORES', 'FLORIDA', 'CANELONES', 'MONTEVIDEO'], SORIANO: ['RIO NEGRO', 'FLORES', 'COLONIA'], TACUAREMBO: ['RIVERA', 'SALTO', 'PAYSANDU', 'RIO NEGRO', 'DURAZNO', 'CERRO LARGO'], 'TREINTA Y TRES': ['CERRO LARGO', 'DURAZNO', 'FLORIDA', 'LAVALLEJA', 'ROCHA'] };
-const fmt = value => value ? new Date(value).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+const verifiedColors = ['#dbeafe', '#bfdbfe', '#93c5fd', '#60a5fa', '#2563eb'];
+const reviewColors = ['#fef3c7', '#fde68a', '#fcd34d', '#fbbf24', '#d97706'];
+const fmt = formatDateTime;
 const cardStyle = 'tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm dark:tw-border-slate-700 dark:tw-bg-slate-800';
+const delayGuidance = item => {
+  if (item.needs_review) {
+    if (item.message === 'Margen de') return 'Margen informado anteriormente. Verificar antes de comunicar un tiempo.';
+    if (item.message === 'A confirmar') return 'Tiempo pendiente de confirmación. Verificar el estado actual.';
+    return `${item.message || 'Demora registrada'}. Verificar antes de comunicar.`;
+  }
+  return item.message === 'Margen de' && item.minutes ? `Margen comunicado: ${item.minutes} min` : item.message || 'Tiempo por confirmar';
+};
 
 export function geoPath(geometry) {
   const project = ([lon, lat]) => [20 + (lon + 58.65) / 5.75 * 380, 20 + (-29.95 - lat) / 5.25 * 460];
@@ -17,14 +28,28 @@ export function geoPath(geometry) {
   return '';
 }
 
-function Map({ geo, departments, activeDelays }) {
+function Map({ geo, mapStats, status, onRetry }) {
   const overlay = useRef(null);
   const popupAnchor = useRef(null);
   const [selected, setSelected] = useState('');
-  const counts = Object.fromEntries(departments.map(item => [normalize(item.department), Number(item.count || 0)]));
-  const scores = Object.fromEntries(Object.keys(counts).map(name => [name, counts[name] + (neighbors[name] || []).reduce((sum, neighbor) => sum + (counts[neighbor] || 0) * .7, 0)]));
-  const max = Math.max(1, ...Object.values(scores));
-  const selectedRows = activeDelays.filter(item => normalize(item.department) === selected).sort((a, b) => String(a.zone).localeCompare(String(b.zone), 'es'));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer;
+    const schedule = () => {
+      const current = Date.now();
+      setNow(current);
+      const deadline = nextReviewDeadline(mapStats, current);
+      if (deadline !== null) timer = window.setTimeout(schedule, Math.max(1, deadline - current + 1));
+    };
+    schedule();
+    const becameVisible = () => { if (document.visibilityState === 'visible') setNow(Date.now()); };
+    document.addEventListener('visibilitychange', becameVisible);
+    return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', becameVisible); };
+  }, [mapStats]);
+  const departments = (mapStats?.departments || []).map(item => departmentAt(item, now));
+  const byName = Object.fromEntries(departments.map(item => [normalize(item.department), item]));
+  const max = Math.max(1, ...departments.map(item => item.active_count || 0));
+  const selectedData = byName[selected];
   const show = (event, name) => {
     const pointer = event.nativeEvent || event.originalEvent || event;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -35,7 +60,33 @@ function Map({ geo, departments, activeDelays }) {
     setSelected(name);
     overlay.current?.show(pointer, popupAnchor.current);
   };
-  return <div className="uruguay-map-wrap"><span ref={popupAnchor} className="map-popup-anchor" aria-hidden="true" /><div className="map-canvas"><svg className="uruguay-map" viewBox="0 0 420 500" role="img" aria-label="Mapa de Uruguay con demoras vigentes por departamento"><g className="country-shape">{(geo?.features || []).filter(feature => !['ISLA BRASILENA', 'RINCON DE MANECO'].includes(normalize(feature.properties.nam || feature.properties.DEPTO))).map((feature, index) => { const raw = feature.properties.nam || feature.properties.DEPTO || '', name = normalize(raw), count = counts[name] || 0, level = count ? Math.max(1, Math.min(colors.length - 1, Math.ceil(scores[name] / max * (colors.length - 1)))) : 0; return <path key={name} d={geoPath(feature.geometry)} fill={colors[level]} className={`map-department ${count ? 'has-active' : ''}`} role="button" tabIndex={0} aria-label={`${raw}: ${count} ${count === 1 ? 'demora vigente' : 'demoras vigentes'}. Ver detalle`} onClick={event => show(event, name)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show(event, name); } }}><title>{raw}: {count} {count === 1 ? 'demora vigente' : 'demoras vigentes'}</title></path>; })}</g></svg></div><div className="map-legend"><span>Sin demora vigente</span>{colors.map(color => <i key={color} style={{ background: color }} />)}<span>Mayor concentración regional</span></div><OverlayPanel ref={overlay} appendTo={document.body} className="delay-map-overlay" dismissable><strong>{selected}</strong>{selectedRows.length ? <ul>{selectedRows.map(item => <li key={item.id}><span>{item.zone || 'Zona no especificada'} · {item.service}</span><b>{item.message === 'Margen de' && item.minutes ? `${item.minutes} min` : item.message || 'Tiempo por confirmar'}</b></li>)}</ul> : <p>Sin demoras vigentes verificadas.</p>}</OverlayPanel></div>;
+  if(!geo)return <div className="tw-flex tw-flex-col tw-items-start tw-gap-3 tw-p-4" role="alert"><strong>Información del mapa no disponible.</strong><Button label="Reintentar" size="small" onClick={onRetry}/></div>;
+  return <div className="uruguay-map-wrap tw-min-w-0">
+    <span ref={popupAnchor} className="map-popup-anchor" aria-hidden="true" />
+    <div className="map-canvas"><svg className="uruguay-map" viewBox="0 0 420 500" role="img" aria-label="Mapa de Uruguay con demoras por departamento"><g className="country-shape">{(geo.features || []).filter(feature => !['ISLA BRASILENA', 'RINCON DE MANECO'].includes(normalize(feature.properties.nam || feature.properties.DEPTO))).map(feature => {
+      const raw=feature.properties.nam||feature.properties.DEPTO||'',name=normalize(raw),data=byName[name],count=data?.active_count||0,due=data?.review_due_count||0;
+      const level=Math.max(0,Math.min(4,Math.ceil(count/max*5)-1));
+      const fill=status==='error'?'#cbd5e1':count===0?'#e2e8f0':due>0?reviewColors[level]:verifiedColors[level];
+      const description=status==='error'?'Información no disponible':`${data?.verified_count||0} vigentes verificadas; ${due} requieren revisión`;
+      return <path key={name} d={geoPath(feature.geometry)} fill={fill} className={`map-department ${count&&status!=='error'?'has-active':''}`} role="button" tabIndex={0} aria-label={`${raw}: ${description}. Ver detalle`} onClick={event=>show(event,name)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();show(event,name);}}}><title>{raw}: {description}</title></path>;
+    })}</g></svg></div>
+    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-text-xs"><span><i className="tw-mr-1 tw-inline-block tw-h-3 tw-w-3 tw-rounded-sm tw-bg-slate-200"/>Sin demoras vigentes</span><span><i className="tw-mr-1 tw-inline-block tw-h-3 tw-w-3 tw-rounded-sm tw-bg-blue-500"/>Vigente verificada</span><span><i className="tw-mr-1 tw-inline-block tw-h-3 tw-w-3 tw-rounded-sm tw-bg-amber-500"/>Requiere revisión</span>{status==='error'&&<span><i className="tw-mr-1 tw-inline-block tw-h-3 tw-w-3 tw-rounded-sm tw-bg-slate-400"/>Información no disponible</span>}</div>
+    <OverlayPanel ref={overlay} appendTo={document.body} className="delay-map-overlay" dismissable>
+      <div className="tw-flex tw-max-w-[min(440px,90vw)] tw-flex-col tw-gap-2 tw-text-[13px]">
+        <strong>{selectedData?.department||selected}</strong>
+        {status==='error'&&<div className="tw-rounded tw-border tw-border-amber-500 tw-p-2" role="alert">Información desactualizada: no confirmes tiempos hasta reintentar. <Button label="Reintentar" text size="small" onClick={onRetry}/></div>}
+        {!selectedData?.active_count ? <p>{status==='error'?'Información no disponible.':'Sin demoras vigentes registradas.'}</p> : <>
+          <div className="tw-flex tw-flex-wrap tw-gap-2"><Tag value={`${selectedData.verified_count} ${status==='error'?'verificadas en la última lectura':'vigentes verificadas'}`} severity="info"/><Tag value={`${selectedData.review_due_count} requieren revisión`} severity={selectedData.review_due_count?'warning':'success'}/></div>
+          <ul className="tw-m-0 tw-flex tw-max-h-[55vh] tw-flex-col tw-gap-2 tw-overflow-y-auto tw-p-0 tw-list-none">{(selectedData.delays||[]).map(item=><li key={item.id} className="tw-rounded tw-border tw-border-[var(--border)] tw-p-2">
+            <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-2"><strong className="tw-whitespace-normal tw-break-words">{item.zone} · {item.service}</strong><Tag value={status==='error'?'Lectura desactualizada':item.needs_review?'Requiere revisión':'Vigente verificada'} severity={status==='error'||item.needs_review?'warning':'success'}/></div>
+            <div className="tw-whitespace-normal tw-break-words">{delayGuidance(status==='error'?{...item,needs_review:true}:item)}</div>
+            <small className="tw-block">Última verificación: {item.last_verified_at?fmt(item.last_verified_at):'Sin verificación registrada'}</small>
+            {item.needs_review&&<small className="tw-block">Revisión vencida: {fmt(item.review_due_at)}</small>}
+          </li>)}</ul>
+        </>}
+      </div>
+    </OverlayPanel>
+  </div>;
 }
 
 function Bars({ counts, limit = 5 }) {
@@ -54,14 +105,22 @@ function Section({ priority, title, children }) {
 }
 
 export function DashboardView({ model }) {
-  const { dashboard: d, geo, activeDelays = [], alerts = [], showAlerts } = model;
+  const { geo, mapStats, mapStatus, alerts = [], alertsStatus, showAlerts, refreshing } = model;
   const [alertScope, setAlertScope] = useState('all');
-  const distributions = d.distributions || {}, departmentRows = distributions.delays_by_department || [];
-  const visibleAlerts = alertScope === 'mine' ? alerts.filter(item => item.responsible === model.currentUser) : alerts;
+  const visibleAlerts = alertScope === 'mine' ? alerts.filter(item => normalize(item.responsible) === normalize(model.currentUser)) : alerts;
   return <div className="operational-view dashboard-react-view tw-grid tw-min-w-0 tw-gap-3 tw-bg-app-canvas tw-text-[13px]">
+    <div className="tw-flex tw-w-full tw-flex-wrap tw-items-center tw-gap-3 tw-text-xs" role="status"><span>Mapa: {mapStats?.as_of?fmt(mapStats.as_of):'sin actualización confirmada'}{mapStatus==='error'?' · datos desactualizados':''}</span>{showAlerts&&<span>Alertas: {model.alertsUpdatedAt?fmt(model.alertsUpdatedAt):'sin actualización confirmada'}{alertsStatus==='error'?' · datos desactualizados':''}</span>}{refreshing&&<span>Actualizando…</span>}</div>
     <div className="tw-grid tw-min-w-0 tw-gap-3 xl:tw-grid-cols-[minmax(0,1.55fr)_minmax(300px,0.65fr)]">
-      <Card className={cardStyle} title="Demoras vigentes por departamento" pt={{body:{className:'tw-p-3'}}}><Map geo={geo} departments={departmentRows} activeDelays={activeDelays}/></Card>
-      {showAlerts&&<Card className={cardStyle} title="Alertas operativas" pt={{body:{className:'tw-p-3'}}}><div className="tw-mb-3 tw-flex tw-gap-2"><button type="button" className="row-action" onClick={()=>setAlertScope('all')}>Todas</button><button type="button" className="row-action" onClick={()=>setAlertScope('mine')}>Asignadas a mí</button></div>{visibleAlerts.length?visibleAlerts.map((item,index)=><div className="operational-alert" key={item.id||index}><Tag value={item.kind==='DELAY'?'Demora':item.kind==='STANDARD_APPROVAL'?'Aprobación':'Revisión'} severity={item.severity==='OVERDUE'?'danger':'warning'}/><strong>{item.title}</strong><small>{item.responsible} · {fmt(item.due_at)}</small></div>):<div className="empty">No hay alertas operativas.</div>}</Card>}
+      <Card className={cardStyle} title="Demoras vigentes por departamento" pt={{body:{className:'tw-p-3'}}}>
+        {mapStatus==='error'&&<div className="tw-mb-3 tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-rounded tw-border tw-border-amber-500 tw-p-3" role="alert"><strong>{mapStats?'Mapa desactualizado':'Información del mapa no disponible'}</strong><span>{model.mapError}</span><Button label="Reintentar" size="small" onClick={model.refresh}/></div>}
+        <Map geo={geo} mapStats={mapStats} status={mapStatus} onRetry={model.refresh}/>
+      </Card>
+      {showAlerts&&<Card className={cardStyle} title="Alertas operativas" pt={{body:{className:'tw-p-3'}}}>
+        <div className="tw-mb-3 tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-w-full"><Button label="Todas" text={alertScope!=='all'} size="small" onClick={()=>setAlertScope('all')}/><Button label="Asignadas a mí" text={alertScope!=='mine'} size="small" onClick={()=>setAlertScope('mine')}/></div>
+        {refreshing&&<div className="tw-mb-2" role="status">Consultando alertas…</div>}
+        {alertsStatus==='error'&&<div className="tw-mb-3 tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-rounded tw-border tw-border-amber-500 tw-p-3" role="alert"><strong>{model.alertsUpdatedAt?'Alertas desactualizadas':'Información de alertas no disponible'}</strong><span>{model.alertsError}</span><Button label="Reintentar" size="small" onClick={model.refresh}/></div>}
+        {alertsStatus==='empty'?<div className="empty">No hay alertas operativas.</div>:visibleAlerts.length?visibleAlerts.map((item,index)=><div className="operational-alert" key={`${item.kind}-${item.entity_id||index}`}><Tag value={item.kind==='DELAY'?'Demora':item.kind==='STANDARD_APPROVAL'?'Aprobación':'Revisión'} severity={item.severity==='OVERDUE'?'danger':'warning'}/><strong>{item.title}</strong><small>{item.responsible} · {fmt(item.due_at)}</small>{alertsStatus==='error'&&<small>Dato desactualizado</small>}</div>):alertsStatus==='error'?<div>No se pudo confirmar si hay alertas.</div>:alertScope==='mine'?<div className="empty">No hay alertas asignadas a mí.</div>:null}
+      </Card>}
     </div>
   </div>;
 }
