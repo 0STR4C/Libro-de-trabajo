@@ -1,7 +1,11 @@
 # Validación técnica local
 
-`run.ps1` ejecuta Python, Node y Vite dentro de Docker, sin instalar paquetes ni
-usar la base operativa. La suite general usa la imagen de pruebas Pytest existente
+`run.ps1` ejecuta Python, Node y Vite dentro de Docker, sin instalar paquetes en
+el host ni usar la base operativa. Antes de compilar Vite reconstruye la imagen
+frontend predeterminada desde el `package-lock.json` vigente; Docker reutiliza
+la caché y solo descarga dependencias cuando cambian. Una imagen frontend
+personalizada se usa tal como se entregó y el resultado indica que no se
+reconstruyó. La suite general usa la imagen de pruebas Pytest existente
 para casos de dominio y la suite PostgreSQL usa un proyecto Compose único por
 corrida. La compilación Vite ocurre en el contenedor y descarta sus salidas.
 

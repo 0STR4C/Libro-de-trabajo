@@ -78,8 +78,8 @@ runtime React publicado.
 ## Límites pendientes
 
 Las pruebas visuales usan datos inventados y no certifican todas las
-combinaciones de permisos, contenido largo o navegadores. La suite general aún
-ejecuta Vite con una imagen local separada, que debe reconstruirse cuando cambie
-`package-lock.json`; el Dockerfile de la aplicación reconstruye su propia etapa
-frontend. Antes de publicar una entrega, conviene repetir el recorrido con
+combinaciones de permisos, contenido largo o navegadores. La suite general
+reconstruye ahora su imagen frontend predeterminada desde `package-lock.json`
+antes de ejecutar Vite; el Dockerfile de la aplicación también compila su propia
+etapa frontend. Antes de publicar una entrega, conviene repetir el recorrido con
 usuarios de cada rol y datos anonimizados de volumen representativo.

@@ -33,7 +33,16 @@ function Test-ImageAvailable([string]$Name) {
 }
 $appReady = Test-ImageAvailable $ImageName
 $pytestReady = Test-ImageAvailable $PytestImageName
-$frontendReady = Test-ImageAvailable $FrontendImageName
+$frontendBuildOk = $true
+if ($FrontendImageName -eq 'librodetrabajo-frontend-check:latest') {
+    Invoke-Stage 'Imagen frontend desde package-lock.json' {
+        & docker build --quiet --target frontend-build --tag $FrontendImageName $root
+    }
+    $frontendBuildOk = $results['Imagen frontend desde package-lock.json'] -eq 'APROBADA'
+} else {
+    $results['Imagen frontend desde package-lock.json'] = 'OMITIDA: se usa imagen personalizada'
+}
+$frontendReady = $frontendBuildOk -and (Test-ImageAvailable $FrontendImageName)
 $nodeReady = Test-ImageAvailable 'node:22-alpine'
 $results['Imagen de aplicación disponible'] = if ($appReady) { 'APROBADA' } else { "BLOQUEADA: falta $ImageName" }
 
@@ -86,6 +95,9 @@ Write-Host 'Resultado por etapa:'
 foreach ($name in $results.Keys) { Write-Host "  $name`: $($results[$name])" }
 $required = @('Imagen de aplicación disponible', 'Pruebas de dominio sin PostgreSQL',
               'Sintaxis JavaScript en Docker', 'Vite en Docker', 'Pruebas PostgreSQL aisladas')
+if ($FrontendImageName -eq 'librodetrabajo-frontend-check:latest') {
+    $required += 'Imagen frontend desde package-lock.json'
+}
 if (@($required | Where-Object { $results[$_] -ne 'APROBADA' }).Count -gt 0) {
     throw 'La validación técnica tiene etapas fallidas o bloqueadas.'
 }

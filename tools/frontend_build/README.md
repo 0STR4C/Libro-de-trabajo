@@ -41,7 +41,7 @@ de JSX: corregir el componente y repetir la compilación.
 
 `audit_css.cjs` compara selectores CSS con las fuentes JSX y el shell activo.
 Requiere la misma imagen Docker de compilación; usa PostCSS 8.5.28 y
-postcss-selector-parser 6.1.4 resuelto por `package-lock.json`. No necesita instalación
+postcss-selector-parser 6.1.5 resuelto por `package-lock.json`. No necesita instalación
 adicional ni red. Es una heurística de candidatos, no prueba de ausencia en el DOM:
 revisar cada resultado, sobre todo clases generadas por datos o bibliotecas.
 
