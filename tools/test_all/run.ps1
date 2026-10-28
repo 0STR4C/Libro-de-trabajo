@@ -80,7 +80,7 @@ if ($pytestReady) { Invoke-Stage 'Pruebas PostgreSQL aisladas' {
 } } else { $results['Pruebas PostgreSQL aisladas'] = "BLOQUEADA: falta $PytestImageName" }
 
 if ($Coverage) { $results['Cobertura opcional'] = 'BLOQUEADA: no hay medidor de cobertura en la imagen de pruebas' }
-$results['Navegador React'] = 'OMITIDA: no existe prueba vigente de navegador en este ejecutor'
+$results['Navegador React'] = 'OMITIDA: ejecutar por separado tools/browser_interaction/'
 $results['UI histórica'] = if ($SkipUiSmoke) { 'OMITIDA: solicitada' } else { 'OMITIDA: pruebas conservadas, fuera del contrato React' }
 Write-Host 'Resultado por etapa:'
 foreach ($name in $results.Keys) { Write-Host "  $name`: $($results[$name])" }

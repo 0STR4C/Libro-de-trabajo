@@ -2,7 +2,7 @@ import unittest
 import json
 from unittest.mock import patch
 
-from app.identity import parse_coordinates
+from app.identity import GoogleMapsRedirectHandler, allowed_maps_url, parse_coordinates
 from app.quote_geography import REGIONAL_PRICE_MESSAGE, is_uruguay_point, require_near_road, require_uruguay_points, require_uruguay_route
 from app.quote_geocoding import GeocodingUnavailable, normalize_photon_results, search_address
 
@@ -23,15 +23,28 @@ class QuoteGeographyTests(unittest.TestCase):
     def test_google_maps_regional_links_follow_only_google_hosts(self):
         class Response:
             def geturl(self): return "https://www.google.com/maps/@-34.9011,-56.1645,17z"
-            def close(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+        class Opener:
+            def open(self, *_args, **_kwargs): return Response()
         for host in ("www.google.com.ar", "www.google.com.br", "maps.google.com.uy"):
-            with patch("app.identity.urlopen", return_value=Response()) as opener:
+            with patch("app.identity.build_opener", return_value=Opener()) as opener:
                 self.assertEqual(parse_coordinates(f"https://{host}/maps/place/ejemplo"), (-34.9011, -56.1645))
                 opener.assert_called_once()
-        with patch("app.identity.urlopen") as opener:
+        with patch("app.identity.build_opener") as opener:
             with self.assertRaises(ValueError):
                 parse_coordinates("https://notgoogle.com/maps/place/ejemplo")
             opener.assert_not_called()
+
+    def test_maps_redirect_cannot_reach_an_internal_or_non_google_host(self):
+        handler = GoogleMapsRedirectHandler()
+        for target in ("http://127.0.0.1/admin", "https://localhost/admin",
+                       "https://google.com.evil.example/maps", "http://www.google.com/maps",
+                       "https://www.google.com:8443/maps"):
+            self.assertFalse(allowed_maps_url(target))
+            with self.assertRaises(ValueError):
+                handler.redirect_request(None, None, 302, "Found", {}, target)
+        self.assertTrue(allowed_maps_url("https://maps.google.com.uy/maps"))
 
     def test_route_crossing_border_is_not_priced_even_with_uruguayan_endpoints(self):
         route = {"coordinates": [[-56.1645, -34.9011], [-58.3816, -34.6037], [-56.1645, -34.9011]]}

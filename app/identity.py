@@ -8,7 +8,7 @@ import os
 import re
 import time
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -21,6 +21,27 @@ except ImportError:
 
 ALLOWED_GOOGLE_DOMAIN = "portoservicios.com.uy"
 GOOGLE_JWKS = {"expires": 0, "keys": {}}
+
+
+def allowed_maps_url(value):
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        valid_port = parsed.port in (None, 443)
+    except ValueError:
+        return False
+    domains = ("google.com", "google.com.uy", "google.com.ar", "google.com.br")
+    return (parsed.scheme == "https" and valid_port
+            and not parsed.username and not parsed.password
+            and (host in ("goo.gl", "maps.app.goo.gl") or
+                 any(host == domain or host.endswith("." + domain) for domain in domains)))
+
+
+class GoogleMapsRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        if not allowed_maps_url(newurl):
+            raise ValueError("El enlace de Maps redirige a un destino no autorizado")
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
 def valid_corporate_email(value):
@@ -102,18 +123,14 @@ def parse_coordinates(value):
             lon = -lon
         if -55.5 <= lat <= 5.5 and -74.5 <= lon <= -34.5:
             return lat, lon
-    if text.startswith(("http://", "https://")):
-        host = (urlparse(text).hostname or "").lower()
-        google_domains = ("google.com", "google.com.uy", "google.com.ar", "google.com.br")
-        if host in ("goo.gl", "maps.app.goo.gl") or any(host == domain or host.endswith("." + domain) for domain in google_domains):
-            try:
-                response = urlopen(Request(text, headers={"User-Agent": "Mozilla/5.0"}), timeout=8)
+    if allowed_maps_url(text):
+        try:
+            with build_opener(GoogleMapsRedirectHandler()).open(Request(text, headers={"User-Agent": "Mozilla/5.0"}), timeout=8) as response:
                 final = response.geturl()
-                response.close()
-                if final != text:
-                    return parse_coordinates(final)
-            except Exception:
-                pass
+            if final != text and allowed_maps_url(final):
+                return parse_coordinates(final)
+        except Exception:
+            pass
     raise ValueError("No se pudieron obtener coordenadas. Use un enlace de Google Maps que incluya la ubicación o escriba latitud,longitud.")
 
 

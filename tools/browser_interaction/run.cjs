@@ -704,6 +704,8 @@ test('Sistema visual: escala, ancho útil, menús y tema en tres tamaños de esc
   await assertLayout('Avisos 1536');
   await page.setViewportSize({width:1280,height:720});
   await assertLayout('Avisos 1280');
+  const statusBadgeHeight=await page.locator('.notice-prime-table tbody .notice-status-dropdown .p-tag').first().evaluate(node=>node.getBoundingClientRect().height);
+  assert.ok(statusBadgeHeight<=30,`Avisos 1280: el estado debe leerse en una línea (${statusBadgeHeight}px)`);
   await page.locator('.user-button').click();
   await page.getByRole('combobox',{name:'Cambiar tema visual'}).selectOption('dark');
   await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');

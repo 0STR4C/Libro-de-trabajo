@@ -127,9 +127,9 @@ de licencia.
 
 Validación técnica sin datos reales: `& .\tools\test_all\run.ps1`. Ejecuta las
 pruebas vigentes, sintaxis JavaScript y Vite en Docker, más integración PostgreSQL
-en un proyecto aislado por ejecución. Informa explícitamente la cobertura de
-navegador React que aún no existe; los scripts visuales de `legacy_archive` son
-históricos. Véase `tools/test_all/README.md`.
+en un proyecto aislado por ejecución. La prueba de navegador React se ejecuta
+por separado con `tools/browser_interaction/`; los scripts visuales de
+`legacy_archive` son históricos. Véanse las guías de ambos ejecutores.
 
 ### Módulos operativos
 
@@ -274,7 +274,7 @@ La arquitectura, los contratos de negocio, la operación segura y el tratamiento
 de datos locales están en [ARCHITECTURE.md](ARCHITECTURE.md). Las instrucciones
 canónicas de IA son [AGENTS.md](AGENTS.md) y [CLAUDE.md](CLAUDE.md), idénticas.
 
-El frontend usa React, PrimeReact y Tailwind con Vite. Las diez vistas y el
+El frontend usa React, PrimeReact y Tailwind con Vite. Las vistas y el
 shell activo están en `frontend/`; `app/static/index.html` solo monta la raíz
 React. `app/static/app.js` ya no se carga en la aplicación y se conserva como
 referencia histórica. Avisos, Zonas con demora, Tiempos estándar de llegada en Configuración y las dos auditorías usan

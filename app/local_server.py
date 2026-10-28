@@ -898,8 +898,10 @@ class Handler(SimpleHTTPRequestHandler):
             with connect() as db:duplicate=transfer_duplicate(db,data)
             return self.send_json([] if not duplicate else [dict(duplicate)])
         view_permissions={"/api/dashboard":"dashboard.view","/api/notices":"notices.view","/api/delays":"delays.view","/api/transfers":"transfers.view","/api/quotes":"quotes.view","/api/standards":"standards.view","/api/audit":"audit.view"}
-        actor=self.require(view_permissions[path]) if path in view_permissions else None
-        if path in view_permissions and not actor:return
+        if path not in view_permissions:
+            return self.send_json({"detail":"Ruta inexistente"},404)
+        actor=self.require(view_permissions[path])
+        if not actor:return
         with connect() as db:
             if path=="/api/dashboard":
                 return self.send_json(dashboard_snapshot(db))

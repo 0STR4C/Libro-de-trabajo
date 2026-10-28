@@ -22,7 +22,8 @@ El resultado identifica cada etapa aprobada, fallida, omitida o bloqueada.
 `-SkipUiSmoke` se mantiene por compatibilidad y registra la omisión. Las pruebas
 de navegador históricas usan `legacy_archive` y no validan la interfaz React.
 Las ocho suites de layout antiguas se conservan como registro histórico y están
-marcadas como omitidas; Vite solo valida compilación, no interacción visual.
+marcadas como omitidas; Vite solo valida compilación. La interacción visual del
+React vigente se prueba por separado con `tools/browser_interaction/`.
 `-Coverage` informa que el medidor opcional no está disponible en la imagen
 actual. Ninguna de estas limitaciones se anuncia como validación visual completa.
 
