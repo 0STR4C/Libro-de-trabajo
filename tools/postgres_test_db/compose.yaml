@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: test_runner
       POSTGRES_PASSWORD: test_only_password
     ports:
-      - "127.0.0.1:54329:5432"
+      - "${TEST_DB_PUBLISH:-127.0.0.1:54329:5432}"
     volumes:
       - test_postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -26,6 +26,11 @@ Entradas: `frontend/`, `app/static/`, configuraciones Vite/Tailwind, `package-lo
 
 ## Escenarios cubiertos
 
+- Rutas de React: ingreso directo, continuidad después del login, refresco,
+  Atrás/Adelante, enlace a otra pestaña, semana de Horarios, historial del
+  Cotizador, planificación, subsección de Configuración, permiso denegado y
+  ruta inexistente. Los parámetros sensibles se descartan de la dirección.
+
 - Login React con foco inicial, nombres de usuario y contraseña, navegación a Avisos y anuncio de carga.
 - Filtros por Enter; dos respuestas fuera de orden; resultado vacío; detalle largo en diálogo.
 - Menú de fila abierto por teclado y Escape; asociación visible y accesible de campos; validación sin POST.
@@ -33,5 +38,16 @@ Entradas: `frontend/`, `app/static/`, configuraciones Vite/Tailwind, `package-lo
 - Conflicto HTTP 409 que conserva el borrador y bloquea Guardar hasta elegir una resolución.
 - Foco inicial y retorno con Escape en los diálogos de aviso y salida; cancelación, confirmación pendiente y logout.
 - Cambio de sesión por respuesta 401; fallo de carga anunciado y botón Reintentar.
+- Escala visual del React real a 1920×1080, 1536×864 y 1280×720; ancho de página, altura mínima de controles, tipografía de tabla, altura máxima de menú, tema oscuro y ampliación al 125 %.
+- Montaje y ausencia de desborde de Resumen, Avisos, Cotizador, Demoras, Programados, Horarios, Mis solicitudes, Dashboard de Supervisión, WFM, auditorías y Configuración con respuestas vacías sintéticas a 1920 y 1280 px.
+- Resumen con el GeoJSON real a 1920 px y panel debajo del mapa a 1024 px; zona buscable, indicaciones por prestación, afectación de `TODAS`, errores y normalización con respuestas API sintéticas. Comprueba que Resumen no consulta alertas operativas.
+- Avisos a 1920 px: calendario en español, siete columnas contenidas en el popup, resaltado alineado de la vista seleccionada y anillo del estado solo mientras su menú está abierto (conservando el indicador de foco de teclado).
+- En el recorrido transversal se abren el calendario y el formulario de Demoras, el modal de Programados, el modo manual del Cotizador y la vista Mis horarios; se verifica Escape y el nombre accesible del selector de prestación.
+
+Para guardar capturas sintéticas, montá una carpeta del proyecto como `/visual-output`
+y pasá `-e VISUAL_OUTPUT=/visual-output` a `docker run`. El ejecutor crea
+`resumen-mapa-real-1920.png`, `resumen-consulta-1920.png`, `avisos-1920.png`, `avisos-oscuro-1280.png` y una captura de cada módulo
+recorrido a 1920 px en esa carpeta. Las capturas y las
+pruebas usan un usuario y avisos inventados.
 
 Las respuestas son sintéticas: esta suite prueba el montaje, los eventos y la interfaz del React real, pero no certifica reglas ni persistencia del backend. Las rutas API no previstas, excepciones de página y fallas de aserción hacen fallar la corrida.

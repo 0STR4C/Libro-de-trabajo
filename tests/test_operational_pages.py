@@ -6,7 +6,7 @@ import unittest
 import psycopg
 from psycopg.rows import dict_row
 
-from app.postgres_server import complete_schedules, paged_operational_records
+from app.postgres_server import complete_schedules, paged_operational_records, paged_delays
 
 
 @unittest.skipUnless(os.getenv("DATABASE_URL"), "requiere PostgreSQL")
@@ -29,6 +29,22 @@ class OperationalPageTests(unittest.TestCase):
                 paged_operational_records(database, "delays", {}, 1)
             with self.assertRaises(ValueError):
                 paged_operational_records(database, "delays", {}, 0, 250)
+
+    def test_new_delay_contract_filters_sorts_and_caps_at_fifty(self):
+        with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as database:
+            database.execute("CREATE TEMP TABLE delay_zones AS SELECT * FROM public.delay_zones WHERE FALSE")
+            database.execute("""INSERT INTO delay_zones(id,service,department,zone,message,status,agent,created_at,next_review_at)
+                SELECT n,'GRÚA',CASE WHEN n <= 61 THEN 'SALTO' ELSE 'ROCHA' END,
+                    'Zona '||n,'A confirmar','VIGENTE','Prueba',
+                    '2026-09-01'::timestamptz + n * interval '1 minute',
+                    '2099-01-01'::timestamptz FROM generate_series(1,121) n""")
+            first=paged_delays(database,{"scope":"current","department":"SALTO"})
+            second=paged_delays(database,{"scope":"current","department":"SALTO"},offset=50)
+            self.assertEqual((first["total"],len(first["items"]),len(second["items"])),(61,50,11))
+            self.assertGreater(first["items"][0]["id"],first["items"][-1]["id"])
+            ascending=paged_delays(database,{"department":"SALTO"},sort_order="asc")
+            self.assertEqual(ascending["items"][0]["id"],1)
+            with self.assertRaises(ValueError):paged_delays(database,{},limit=51)
 
     def test_historical_published_revisions_show_entire_team(self):
         with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as database:

@@ -23,6 +23,8 @@ services:
     image: ${APP_IMAGE:?APP_IMAGE es obligatorio en producción}
     environment:
       APP_ENV: production
+      GEOCODER_URL: ${GEOCODER_URL:-}
+      OSRM_BASE_URL: ${OSRM_BASE_URL:-https://router.project-osrm.org}
       DATABASE_URL: postgresql://${POSTGRES_USER:-operativa}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatorio en producción}@db:5432/${POSTGRES_DB:-operativa}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatorio en producción}
       APP_SECRET: ${APP_SECRET:?APP_SECRET es obligatorio en producción}

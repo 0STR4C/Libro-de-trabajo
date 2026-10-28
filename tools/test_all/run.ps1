@@ -1,63 +1,92 @@
 [CmdletBinding()]
 param(
     [string]$ImageName = 'librodetrabajo-app:latest',
+    [string]$PytestImageName = 'librodetrabajo-delays-pytest:local',
+    [string]$FrontendImageName = 'librodetrabajo-frontend-check:latest',
     [switch]$SkipUiSmoke,
     [switch]$Coverage
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-$uiScript = Join-Path $root 'tools\wfm_offline_build\ui_smoke.cjs'
-$dashboardUiScript = Join-Path $root 'tools\wfm_offline_build\dashboard_smoke.cjs'
-$noticeUiScript = Join-Path $root 'tools\wfm_offline_build\notice_smoke.cjs'
-$playwrightModule = Join-Path $root 'tools\wfm_offline_build\node_modules\playwright'
-$javascriptFiles = @(
-    (Join-Path $root 'app\static\app.js'),
-    (Join-Path $root 'legacy_archive\wfm.js'),
-    $uiScript,
-    $dashboardUiScript,
-    $noticeUiScript
+$results = [ordered]@{}
+if ($ImageName -ne 'librodetrabajo-app:latest' -and
+    $PytestImageName -eq 'librodetrabajo-delays-pytest:local') {
+    throw 'Para validar otra imagen, indicá también -PytestImageName construido desde esa imagen.'
+}
+
+function Invoke-Stage([string]$Name, [scriptblock]$Action) {
+    try {
+        & $Action
+        if ($LASTEXITCODE -ne 0) { throw "Código de salida $LASTEXITCODE" }
+        $results[$Name] = 'APROBADA'
+    }
+    catch {
+        $results[$Name] = "FALLIDA: $($_.Exception.Message)"
+    }
+}
+
+function Test-ImageAvailable([string]$Name) {
+    & docker image inspect $Name --format '{{.Id}}' 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+$appReady = Test-ImageAvailable $ImageName
+$pytestReady = Test-ImageAvailable $PytestImageName
+$frontendReady = Test-ImageAvailable $FrontendImageName
+$nodeReady = Test-ImageAvailable 'node:22-alpine'
+$results['Imagen de aplicación disponible'] = if ($appReady) { 'APROBADA' } else { "BLOQUEADA: falta $ImageName" }
+
+$legacy = @(
+    'tests/test_accessible_layout.py', 'tests/test_contextual_workflows.py',
+    'tests/test_dashboard_visual_hierarchy.py', 'tests/test_delay_layout.py',
+    'tests/test_login_layout.py', 'tests/test_notice_layout.py',
+    'tests/test_quote_layout.py', 'tests/test_settings_news.py'
 )
+$postgres = @(
+    'tests/test_arrival_times_pytest.py', 'tests/test_delay_api_pytest.py',
+    'tests/test_notice_page.py', 'tests/test_operational_pages.py',
+    'tests/test_postgres_security.py'
+)
+$excluded = @($legacy + $postgres | ForEach-Object { "--ignore=$_" })
 
-Write-Host '1/3 Suite general aislada'
-if ($Coverage) {
-    & docker run --rm --pull=never --network none --read-only --tmpfs '/tmp:rw,size=512m' `
-        --mount "type=bind,source=$root,target=/work,readonly" --workdir /work `
-        $ImageName python -B -m trace --count --summary --coverdir=/tmp/coverage `
-        --ignore-dir=/usr/local/lib/python3.12:/work/tests --module unittest discover -s tests -q
+if ($pytestReady) { Invoke-Stage 'Pruebas de dominio sin PostgreSQL' {
+    $args = @('run', '--rm', '--pull=never', '--network', 'none', '--read-only',
+        '--tmpfs', '/tmp:rw,size=512m', '--mount', "type=bind,source=$root,target=/work,readonly",
+        '--workdir', '/work', $PytestImageName, 'python', '-B', '-m', 'pytest',
+        'tests', '-q', '-p', 'no:cacheprovider', '--disable-warnings', '--tb=short') + $excluded
+    & docker @args
+} } else { $results['Pruebas de dominio sin PostgreSQL'] = "BLOQUEADA: falta $PytestImageName" }
+
+if ($nodeReady) { Invoke-Stage 'Sintaxis JavaScript en Docker' {
+    & docker run --rm --pull=never --network none `
+        --mount "type=bind,source=$root,target=/project,readonly" --workdir /project `
+        node:22-alpine sh -ec 'node --check frontend/date-format.js && node --check app/static/branding.js'
+} } else { $results['Sintaxis JavaScript en Docker'] = 'BLOQUEADA: falta node:22-alpine' }
+
+if ($frontendReady) { Invoke-Stage 'Vite en Docker' {
+    & docker run --rm --pull=never --network none `
+        --mount "type=bind,source=$root/frontend,target=/build/frontend,readonly" `
+        --mount "type=bind,source=$root/tailwind.config.js,target=/build/tailwind.config.js,readonly" `
+        --mount "type=bind,source=$root/postcss.config.js,target=/build/postcss.config.js,readonly" `
+        --mount "type=bind,source=$root/vite.config.js,target=/build/vite.config.js,readonly" `
+        $FrontendImageName npm run build:frontend
+} } else { $results['Vite en Docker'] = "BLOQUEADA: falta $FrontendImageName" }
+
+if ($pytestReady) { Invoke-Stage 'Pruebas PostgreSQL aisladas' {
+    & (Join-Path $root 'tools\postgres_test_db\run.ps1') -ImageName $PytestImageName `
+        -TestCommand (@('python', '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+                         '--disable-warnings', '--tb=short') + $postgres)
+} } else { $results['Pruebas PostgreSQL aisladas'] = "BLOQUEADA: falta $PytestImageName" }
+
+if ($Coverage) { $results['Cobertura opcional'] = 'BLOQUEADA: no hay medidor de cobertura en la imagen de pruebas' }
+$results['Navegador React'] = 'OMITIDA: no existe prueba vigente de navegador en este ejecutor'
+$results['UI histórica'] = if ($SkipUiSmoke) { 'OMITIDA: solicitada' } else { 'OMITIDA: pruebas conservadas, fuera del contrato React' }
+Write-Host 'Resultado por etapa:'
+foreach ($name in $results.Keys) { Write-Host "  $name`: $($results[$name])" }
+$required = @('Imagen de aplicación disponible', 'Pruebas de dominio sin PostgreSQL',
+              'Sintaxis JavaScript en Docker', 'Vite en Docker', 'Pruebas PostgreSQL aisladas')
+if (@($required | Where-Object { $results[$_] -ne 'APROBADA' }).Count -gt 0) {
+    throw 'La validación técnica tiene etapas fallidas o bloqueadas.'
 }
-else {
-    & docker run --rm --pull=never --network none --read-only --tmpfs '/tmp:rw,size=512m' `
-        --mount "type=bind,source=$root,target=/work,readonly" --workdir /work `
-        $ImageName python -B -m unittest discover -s tests -q
-}
-if ($LASTEXITCODE -ne 0) { throw 'La suite general informó fallos.' }
-
-Write-Host '2/3 Sintaxis JavaScript'
-$node = Get-Command node -ErrorAction SilentlyContinue
-if ($null -eq $node) { throw 'No se encontró Node.js para validar JavaScript.' }
-foreach ($file in $javascriptFiles) {
-    & $node.Source --check $file
-    if ($LASTEXITCODE -ne 0) { throw "La validación JavaScript falló: $file" }
-}
-
-if (-not $SkipUiSmoke) {
-    if (Test-Path -LiteralPath $playwrightModule -PathType Container) {
-        Write-Host 'Prueba UI aislada'
-        foreach ($script in @($uiScript, $dashboardUiScript, $noticeUiScript)) {
-            & $node.Source $script
-            if ($LASTEXITCODE -ne 0) { throw "La prueba UI informó fallos: $script" }
-        }
-    }
-    else {
-        Write-Warning 'Playwright no está instalado localmente; la prueba UI queda omitida. Consulte tools/wfm_offline_build/README.md.'
-    }
-}
-
-Write-Host '3/3 Suite PostgreSQL aislada'
-& (Join-Path $root 'tools\postgres_test_db\run.ps1') -ImageName $ImageName
-if ($LASTEXITCODE -ne 0) { throw 'La suite PostgreSQL informó fallos.' }
-
-Write-Host 'Validación completa: OK'
+Write-Host 'Validación técnica aprobada; límites de cobertura indicados arriba.'

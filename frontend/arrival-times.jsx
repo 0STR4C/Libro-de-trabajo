@@ -6,21 +6,29 @@ import { Dialog } from 'primereact/dialog';
 import { Dropdown } from 'primereact/dropdown';
 import { InputNumber } from 'primereact/inputnumber';
 import { InputSwitch } from 'primereact/inputswitch';
+import { MultiSelect } from 'primereact/multiselect';
 import { Tag } from 'primereact/tag';
 import { Toast } from 'primereact/toast';
 import { createArrivalPageRequests } from './arrival-times-requests.js';
+import { arrivalIndicationText } from './arrival-map-query.js';
+import { displayLocation, displayService } from './operational-labels.js';
 
 const ALL_DEPARTMENT = 'Todo el departamento';
-const emptyForm = { service: '', department: '', zone: ALL_DEPARTMENT, base_estimated_minutes: null, is_active: true };
-const asOptions = values => values.map(value => ({ label: value, value }));
+const emptyForm = { service: '', department: '', zone: ALL_DEPARTMENT, indication_type: 'TIME', base_estimated_minutes: null, minutes_min: null, minutes_max: null, is_active: true };
+const indicationOptions = [
+  { label: 'Tiempo habitual', value: 'TIME' }, { label: 'Máximo de', value: 'MAXIMUM' },
+  { label: 'Entre (intervalo)', value: 'INTERVAL' }, { label: 'A confirmar', value: 'TO_CONFIRM' },
+];
+const asOptions = (values, display = displayLocation) => values.map(value => ({ label: display(value), value }));
 const field = (label, control) => <label className="tw-flex tw-min-w-0 tw-flex-col tw-gap-1 tw-text-[13px] tw-font-medium"><span>{label}</span>{control}</label>;
 
-export function ArrivalTimesView({ model, active = true }) {
+export function ArrivalTimesView({ model, active = true, embedded = false }) {
   const [filters, setFilters] = useState(model.filters);
   const [page, setPage] = useState(model.page);
   const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [editingSeed, setEditingSeed] = useState(false);
   const [editingRevision, setEditingRevision] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -64,6 +72,7 @@ export function ArrivalTimesView({ model, active = true }) {
   const departments = model.geography?.departments || {};
   const services = model.geography?.services || [];
   const zones = form.department ? departments[form.department] || [ALL_DEPARTMENT] : [];
+  const chosenZones = form.zone === ALL_DEPARTMENT ? [] : String(form.zone || '').split(',').map(zone => zone.trim()).filter(Boolean);
 
   const loadPage = (offset) => {
     if (!activeRef.current || filterTransition.current) return Promise.resolve(false);
@@ -118,10 +127,12 @@ export function ArrivalTimesView({ model, active = true }) {
     setConflict(false);
     setConflictCurrent(null);
     setEditingId(row?.id || null);
+    setEditingSeed(Boolean(row?.seed_key));
     setEditingRevision(row?.revision || null);
     setForm(row ? {
       service: row.service, department: row.department, zone: row.zone,
-      base_estimated_minutes: row.base_estimated_minutes, is_active: row.is_active
+      indication_type: row.indication_type || 'TIME', base_estimated_minutes: row.base_estimated_minutes,
+      minutes_min: row.minutes_min, minutes_max: row.minutes_max, is_active: row.is_active
     } : { ...emptyForm });
     setVisible(true);
   };
@@ -130,8 +141,11 @@ export function ArrivalTimesView({ model, active = true }) {
     event.preventDefault();
     if (writeInFlight.current) return;
     if (conflict) { notify('error', 'Compará la versión vigente antes de volver a guardar.'); return; }
-    if (!form.service || !form.department || !form.zone || !form.base_estimated_minutes) {
-      notify('error', 'Completá servicio, departamento, zona y tiempo base');
+    if (!form.service || !form.department || !form.zone ||
+        form.indication_type === 'TIME' && !form.base_estimated_minutes ||
+        form.indication_type === 'MAXIMUM' && !form.minutes_max ||
+        form.indication_type === 'INTERVAL' && (!form.minutes_min || !form.minutes_max || form.minutes_min > form.minutes_max)) {
+      notify('error', 'Completá la prestación, ubicación y valores de la indicación seleccionada');
       return;
     }
     const dialogTicket = dialogSequence.current;
@@ -205,7 +219,8 @@ export function ArrivalTimesView({ model, active = true }) {
     setEditingId(current.id);
     setEditingRevision(current.revision);
     setForm({ service: current.service, department: current.department, zone: current.zone,
-      base_estimated_minutes: current.base_estimated_minutes, is_active: current.is_active });
+      indication_type: current.indication_type || 'TIME', base_estimated_minutes: current.base_estimated_minutes,
+      minutes_min: current.minutes_min, minutes_max: current.minutes_max, is_active: current.is_active });
     setConflict(false);
     setConflictCurrent(null);
   };
@@ -214,14 +229,15 @@ export function ArrivalTimesView({ model, active = true }) {
   return <div className="tw-flex tw-min-w-0 tw-flex-col tw-gap-3 tw-text-[13px]">
     <Toast ref={toast} />
     <div className="tw-flex tw-w-full tw-flex-wrap tw-items-center tw-justify-between tw-gap-3">
-      <h1 className="tw-m-0 tw-text-xl tw-font-semibold">Tiempos de arribo</h1>
+      {embedded ? <h2 className="tw-m-0 tw-text-lg tw-font-semibold">Tiempos estándar de llegada</h2> : <h1 className="tw-m-0 tw-text-xl tw-font-semibold">Tiempos estándar de llegada</h1>}
       {model.canManage && <Button label="Nuevo tiempo" icon="pi pi-plus" size="small" className="tw-h-9" onClick={() => open(null)} />}
     </div>
+    {embedded && <p className="tw-m-0 tw-text-sm tw-text-slate-600">Referencias habituales por prestación y ubicación. Los registros «Prueba» no se comunican en Resumen. Las demoras temporales se registran por separado.</p>}
 
     <section className="tw-rounded-md tw-border tw-border-[var(--border)] tw-bg-[var(--surface)] tw-p-4 tw-shadow-sm">
       <div className="tw-flex tw-w-full tw-flex-wrap tw-items-end tw-gap-3">
         {field('Departamento', <Dropdown appendTo={document.body} value={filters.department} options={[{ label: 'Todos los departamentos', value: '' }, ...asOptions(Object.keys(departments))]} onChange={event => setFilters(previous => ({ ...previous, department: event.value }))} className="tw-w-full tw-min-w-[190px]" />)}
-        {field('Servicio', <Dropdown appendTo={document.body} value={filters.service} options={[{ label: 'Todos los servicios', value: '' }, ...asOptions(services)]} onChange={event => setFilters(previous => ({ ...previous, service: event.value }))} className="tw-w-full tw-min-w-[150px]" />)}
+        {field('Servicio', <Dropdown appendTo={document.body} value={filters.service} options={[{ label: 'Todos los servicios', value: '' }, ...asOptions(services, displayService)]} onChange={event => setFilters(previous => ({ ...previous, service: event.value }))} className="tw-w-full tw-min-w-[150px]" />)}
         {field('Estado', <Dropdown appendTo={document.body} value={filters.status} options={[{ label: 'Todos', value: 'all' }, { label: 'Activos', value: 'active' }, { label: 'Inactivos', value: 'inactive' }]} onChange={event => setFilters(previous => ({ ...previous, status: event.value }))} className="tw-w-full tw-min-w-[130px]" />)}
         <div className="tw-flex tw-w-full tw-flex-wrap tw-items-center tw-gap-3 sm:tw-w-auto">
           <Button label="Filtrar" icon="pi pi-filter" size="small" className="tw-h-9" onClick={apply} />
@@ -234,25 +250,30 @@ export function ArrivalTimesView({ model, active = true }) {
       <DataTable value={page?.items || []} dataKey="id" lazy paginator first={page?.offset || 0} rows={50} totalRecords={page?.total || 0} onPage={pageChanged} loading={loading} size="small" stripedRows
         paginatorTemplate="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink CurrentPageReport" currentPageReportTemplate="{first}–{last} de {totalRecords}"
         emptyMessage="No hay tiempos de arribo para los filtros seleccionados" className="tw-min-w-0 tw-max-w-full tw-text-[13px] [&_.p-datatable-table]:tw-table-fixed [&_td]:tw-h-9 [&_td]:tw-px-2 [&_td]:tw-py-1 [&_td]:tw-whitespace-normal [&_td]:tw-break-words [&_th]:tw-px-2 [&_th]:tw-py-1">
-        <Column field="service" header="Servicio" headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '15%' }} />
-        <Column field="department" header="Departamento" headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '21%' }} />
-        <Column field="zone" header="Zona" headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '25%' }} />
-        <Column header="Tiempo base" body={row => <span className="tw-whitespace-nowrap">{row.base_estimated_minutes} min</span>} style={{ width: '14%' }} />
-        <Column header="Estado" body={row => <Tag value={row.is_active ? 'Activo' : 'Inactivo'} severity={row.is_active ? 'success' : 'secondary'} />} style={{ width: '12%' }} />
+        <Column field="service" header="Servicio" body={row => displayService(row.service)} headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '15%' }} />
+        <Column field="department" header="Departamento" body={row => displayLocation(row.department)} headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '21%' }} />
+        <Column field="zone" header="Zona" body={row => displayLocation(row.zone)} headerClassName={headerClass} bodyClassName="tw-whitespace-normal tw-break-words" style={{ width: '25%' }} />
+        <Column header="Indicación habitual" body={row => <span>{arrivalIndicationText(row)}</span>} style={{ width: '14%' }} />
+        <Column header="Estado" body={row => <Tag value={row.seed_key ? row.is_active ? 'Prueba · no operativo' : 'Prueba · inactivo' : row.is_active ? 'Activo' : 'Inactivo'} severity={row.seed_key && row.is_active ? 'warning' : row.is_active ? 'success' : 'secondary'} />} style={{ width: '12%' }} />
         {model.canManage && <Column header="Acciones" body={row => <div className="tw-flex tw-w-full tw-flex-wrap tw-items-center tw-gap-1">
-          <Button icon="pi pi-pencil" aria-label={`Editar ${row.service} en ${row.zone}`} text size="small" className="tw-h-8 tw-w-8" onClick={() => open(row)} />
-          {row.is_active && <Button icon="pi pi-ban" aria-label={`Desactivar ${row.service} en ${row.zone}`} text severity="danger" size="small" className="tw-h-8 tw-w-8" onClick={() => setDeactivateCandidate(row)} />}
+          <Button icon="pi pi-pencil" aria-label={`Editar ${displayService(row.service)} en ${displayLocation(row.zone)}`} text size="small" className="tw-h-8 tw-w-8" onClick={() => open(row)} />
+          {row.is_active && <Button icon="pi pi-ban" aria-label={`Desactivar ${displayService(row.service)} en ${displayLocation(row.zone)}`} text severity="danger" size="small" className="tw-h-8 tw-w-8" onClick={() => setDeactivateCandidate(row)} />}
         </div>} style={{ width: '13%' }} />}
       </DataTable>
     </section>
 
-    <Dialog header={editingId ? 'Editar tiempo de arribo' : 'Nuevo tiempo de arribo'} visible={visible} onHide={() => close()} modal appendTo={document.body} style={{ width: 'min(560px, 96vw)' }} breakpoints={{ '640px': '96vw' }}>
+    <Dialog header={editingId ? 'Editar tiempo estándar' : 'Nuevo tiempo estándar'} visible={visible && active} onHide={() => { if (activeRef.current) close(); }} modal appendTo={document.body} style={{ width: 'min(560px, 96vw)' }} breakpoints={{ '640px': '96vw' }}>
       <form onSubmit={save} className="tw-flex tw-flex-col tw-gap-3 tw-p-1">
-        {conflict&&<div role="alert" className="tw-rounded-md tw-border tw-border-amber-400 tw-bg-amber-50 tw-p-3 tw-text-[13px]"><strong>El catálogo cambió mientras trabajabas.</strong><p className="tw-mb-2">Tu borrador permanece en el formulario. Compará los valores antes de continuar.</p>{conflictCurrent?<div className="tw-grid tw-gap-1"><span><strong>Versión vigente:</strong> {conflictCurrent.service} · {conflictCurrent.department} · {conflictCurrent.zone} · {conflictCurrent.base_estimated_minutes} min · {conflictCurrent.is_active?'Activo':'Inactivo'} (revisión {conflictCurrent.revision})</span><span><strong>Tu borrador:</strong> {form.service} · {form.department} · {form.zone} · {form.base_estimated_minutes} min · {form.is_active?'Activo':'Inactivo'}</span></div>:<span>No se pudo confirmar aún la versión vigente.</span>}<div className="tw-mt-2 tw-flex tw-flex-wrap tw-gap-2"><Button type="button" text size="small" label="Consultar versión vigente" onClick={()=>loadCurrentVersion(editingId,form,dialogSequence.current)} />{conflictCurrent&&<Button type="button" outlined size="small" label="Cargar versión vigente" onClick={adoptCurrent} />}</div></div>}
-        {field('Servicio', <Dropdown appendTo={document.body} value={form.service} options={asOptions(services)} placeholder="Seleccioná un servicio" onChange={event => setForm(previous => ({ ...previous, service: event.value, department: '', zone: ALL_DEPARTMENT }))} className="tw-w-full" />)}
+        {editingSeed && <div role="note" className="tw-rounded tw-border tw-border-amber-400 tw-p-2">Este registro proviene de datos de prueba. Editarlo no lo publica en Resumen; para establecer un tiempo operativo, desactivalo y cargá uno nuevo.</div>}
+        {conflict&&<div role="alert" className="tw-rounded-md tw-border tw-border-amber-400 tw-bg-amber-50 tw-p-3 tw-text-[13px]"><strong>El catálogo cambió mientras trabajabas.</strong><p className="tw-mb-2">Tu borrador permanece en el formulario. Compará los valores antes de continuar.</p>{conflictCurrent?<div className="tw-grid tw-gap-1"><span><strong>Versión vigente:</strong> {displayService(conflictCurrent.service)} · {displayLocation(conflictCurrent.department)} · {displayLocation(conflictCurrent.zone)} · {arrivalIndicationText(conflictCurrent)} · {conflictCurrent.is_active?'Activo':'Inactivo'} (revisión {conflictCurrent.revision})</span><span><strong>Tu borrador:</strong> {displayService(form.service)} · {displayLocation(form.department)} · {displayLocation(form.zone)} · {arrivalIndicationText(form)} · {form.is_active?'Activo':'Inactivo'}</span></div>:<span>No se pudo confirmar aún la versión vigente.</span>}<div className="tw-mt-2 tw-flex tw-flex-wrap tw-gap-2"><Button type="button" text size="small" label="Consultar versión vigente" onClick={()=>loadCurrentVersion(editingId,form,dialogSequence.current)} />{conflictCurrent&&<Button type="button" outlined size="small" label="Cargar versión vigente" onClick={adoptCurrent} />}</div></div>}
+        {field('Servicio', <Dropdown appendTo={document.body} value={form.service} options={asOptions(services, displayService)} placeholder="Seleccioná un servicio" onChange={event => setForm(previous => ({ ...previous, service: event.value, department: '', zone: ALL_DEPARTMENT }))} className="tw-w-full" />)}
         {field('Departamento', <Dropdown appendTo={document.body} value={form.department} options={asOptions(Object.keys(departments))} placeholder="Seleccioná un departamento" disabled={!form.service} onChange={event => setForm(previous => ({ ...previous, department: event.value, zone: ALL_DEPARTMENT }))} className="tw-w-full" />)}
-        {field('Zona', <Dropdown appendTo={document.body} value={form.zone} options={asOptions(zones)} disabled={!form.department} onChange={event => change('zone', event.value)} className="tw-w-full" />)}
-        {field('Tiempo base (minutos)', <InputNumber value={form.base_estimated_minutes} onValueChange={event => change('base_estimated_minutes', event.value)} min={1} max={1440} useGrouping={false} className="tw-w-full" inputClassName="tw-w-full" />)}
+        {field('Zonas (vacío: todo el departamento)', <MultiSelect appendTo={document.body} value={chosenZones} options={asOptions(zones.filter(zone => zone !== ALL_DEPARTMENT))} disabled={!form.department} onChange={event => change('zone', event.value.length ? event.value.join(', ') : ALL_DEPARTMENT)} placeholder={ALL_DEPARTMENT} display="chip" maxSelectedLabels={3} filter className="tw-w-full" />)}
+        {field('Indicación', <Dropdown appendTo={document.body} value={form.indication_type} options={indicationOptions} onChange={event => setForm(previous => ({ ...previous, indication_type: event.value, base_estimated_minutes: null, minutes_min: null, minutes_max: null }))} className="tw-w-full" />)}
+        {form.indication_type === 'TIME' && field('Tiempo habitual (minutos)', <InputNumber value={form.base_estimated_minutes} onValueChange={event => change('base_estimated_minutes', event.value)} min={1} max={1440} useGrouping={false} className="tw-w-full" inputClassName="tw-w-full" />)}
+        {form.indication_type === 'MAXIMUM' && field('Máximo (minutos)', <InputNumber value={form.minutes_max} onValueChange={event => change('minutes_max', event.value)} min={1} max={1440} useGrouping={false} className="tw-w-full" inputClassName="tw-w-full" />)}
+        {form.indication_type === 'INTERVAL' && <div className="tw-grid tw-grid-cols-2 tw-gap-3">{field('Desde (minutos)', <InputNumber value={form.minutes_min} onValueChange={event => change('minutes_min', event.value)} min={1} max={1440} useGrouping={false} className="tw-w-full" inputClassName="tw-w-full" />)}{field('Hasta (minutos)', <InputNumber value={form.minutes_max} onValueChange={event => change('minutes_max', event.value)} min={1} max={1440} useGrouping={false} className="tw-w-full" inputClassName="tw-w-full" />)}</div>}
+        {form.indication_type === 'TO_CONFIRM' && <small>No se comunicará un tiempo numérico: A confirmar.</small>}
         <label className="tw-flex tw-items-center tw-gap-3 tw-text-[13px] tw-font-medium"><InputSwitch checked={form.is_active} onChange={event => change('is_active', event.value)} />Activo</label>
         <div className="tw-flex tw-w-full tw-flex-wrap tw-items-center tw-justify-end tw-gap-3">
           <Button type="button" label="Cancelar" text size="small" onClick={() => close()} disabled={saving} />
@@ -260,8 +281,8 @@ export function ArrivalTimesView({ model, active = true }) {
         </div>
       </form>
     </Dialog>
-    <Dialog header="Desactivar tiempo de arribo" visible={Boolean(deactivateCandidate)} onHide={()=>setDeactivateCandidate(null)} modal appendTo={document.body} style={{ width: 'min(460px, 95vw)' }}>
-      <p className="tw-m-0 tw-whitespace-normal tw-break-words">¿Desactivar {deactivateCandidate?.service} en {deactivateCandidate?.department} · {deactivateCandidate?.zone}? El registro permanecerá en el historial.</p>
+    <Dialog header="Desactivar tiempo estándar" visible={Boolean(deactivateCandidate) && active} onHide={()=>{ if (activeRef.current) setDeactivateCandidate(null); }} modal appendTo={document.body} style={{ width: 'min(460px, 95vw)' }}>
+      <p className="tw-m-0 tw-whitespace-normal tw-break-words">¿Desactivar {displayService(deactivateCandidate?.service)} en {displayLocation(deactivateCandidate?.department)} · {displayLocation(deactivateCandidate?.zone)}? El registro permanecerá en el historial.</p>
       <div className="tw-mt-4 tw-flex tw-w-full tw-flex-wrap tw-items-center tw-justify-end tw-gap-3"><Button type="button" label="Cancelar" text size="small" onClick={()=>setDeactivateCandidate(null)} /><Button type="button" label="Desactivar" severity="danger" size="small" onClick={()=>deactivate(deactivateCandidate)} /></div>
     </Dialog>
   </div>;

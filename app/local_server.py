@@ -1,5 +1,5 @@
 """Modo local: servidor HTTP con SQLite y autenticación corporativa."""
-import hmac, json, math, re, secrets, sqlite3, time
+import hashlib, hmac, json, math, re, secrets, sqlite3, time
 from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from http.cookies import SimpleCookie
@@ -10,30 +10,38 @@ try:
     from . import wfm
     from .application import APP_VERSION, DEFAULT_ROLES, NOTICE_MANAGE_PERMISSIONS, PERMISSIONS, SCHEDULE_ROLES, current_release_payload
     from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
+    from .geography import geography_payload
     from .dashboard import build_dashboard_payload
-    from .identity import ALLOWED_GOOGLE_DOMAIN, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
+    from .identity import ALLOWED_GOOGLE_DOMAIN, nearest_road, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
     from .migrations import ensure_sqlite_migration_registry, reconcile_migration_checksums
-    from .notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
+    from .notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, ensure_notice_duplicate_lookup, notice_duplicate_keys, notice_duplicate_reason, notice_duplicates, notice_update_permissions
     from .quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from .tolls import detect_toll_passes
+    from .quote_geography import is_uruguay_point, require_manual_region_points, require_near_road, require_uruguay_points, require_uruguay_route
+    from .quote_geocoding import GeocodingUnavailable, search_address
     from .tile_proxy import TileProxyError, fetch_osm_tile
     from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
     from .scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
+    from .schedule_read import team_week_snapshot
     from .security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
     from .transfers import TRANSFER_STATUSES, clean_transfer, normalized_status, validate_transition
 except ImportError:
     import wfm
     from application import APP_VERSION, DEFAULT_ROLES, NOTICE_MANAGE_PERMISSIONS, PERMISSIONS, SCHEDULE_ROLES, current_release_payload
     from delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
+    from geography import geography_payload
     from dashboard import build_dashboard_payload
-    from identity import ALLOWED_GOOGLE_DOMAIN, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
+    from identity import ALLOWED_GOOGLE_DOMAIN, nearest_road, parse_coordinates, route_data, route_km, valid_corporate_email, verify_google_id_token
     from migrations import ensure_sqlite_migration_registry, reconcile_migration_checksums
-    from notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, notice_duplicate_reason, notice_duplicates, notice_update_permissions
+    from notices import NOTICE_AUDIENCES, NOTICE_CLOSED_STATUSES, NOTICE_STATUSES, ensure_notice_duplicate_lookup, notice_duplicate_keys, notice_duplicate_reason, notice_duplicates, notice_update_permissions
     from quotes import QUOTE_RULE_EXTRA_COLUMNS, QUOTE_RULE_LEGACY_COPIES, calculate_extra_km, round_currency, round_distance, validate_manual_distances, validate_manual_toll_count, validate_quote_rule_values
     from tolls import detect_toll_passes
+    from quote_geography import is_uruguay_point, require_manual_region_points, require_near_road, require_uruguay_points, require_uruguay_route
+    from quote_geocoding import GeocodingUnavailable, search_address
     from tile_proxy import TileProxyError, fetch_osm_tile
     from reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
     from scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
+    from schedule_read import team_week_snapshot
     from security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME, csrf_token_for_session, hash_password, password_needs_rehash, verify_password
     from transfers import TRANSFER_STATUSES, clean_transfer, normalized_status, validate_transition
 
@@ -141,6 +149,13 @@ def initialize():
     with connect() as db:
         db.executescript(SCHEMA)
         ensure_sqlite_migration_registry(db)
+        for table in ("notices", "scheduled_transfers"):
+            if "revision" not in {column[1] for column in db.execute(f"PRAGMA table_info({table})")}:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+        if "administratively_retired_at" not in {column[1] for column in db.execute("PRAGMA table_info(notices)")}:
+            db.execute("ALTER TABLE notices ADD COLUMN administratively_retired_at TEXT")
+        ensure_notice_duplicate_lookup(db)
+        db.execute("INSERT OR IGNORE INTO schema_migrations(key,applied_at,checksum) VALUES('optimistic_revisions_v1',?,?)",(now(),hashlib.sha256(b"notices,scheduled_transfers:revision:1").hexdigest()))
         db.executescript(NOTICE_EVENTS_SCHEMA)
         db.executescript(TRANSFER_EVENTS_SCHEMA)
         audit_columns={r[1] for r in db.execute("PRAGMA table_info(audit_events)").fetchall()}
@@ -183,11 +198,14 @@ def initialize():
             db.execute("INSERT INTO schema_migrations(key,applied_at) VALUES('transfer_workflow_v1',?)",(now(),))
         delay_columns={r[1] for r in db.execute("PRAGMA table_info(delay_zones)").fetchall()}
         for column,definition in {
-            "normalized_by":"TEXT", "resolution_note":"TEXT", "last_verified_at":"TEXT", "expires_at":"TEXT", "last_verified_by":"TEXT", "zone_id":"INTEGER"
+            "normalized_by":"TEXT", "resolution_note":"TEXT", "last_verified_at":"TEXT", "expires_at":"TEXT", "next_review_at":"TEXT", "duration_minutes":"INTEGER", "last_verified_by":"TEXT", "zone_id":"INTEGER", "minutes_min":"INTEGER", "minutes_max":"INTEGER", "instruction_text":"TEXT"
         }.items():
             if column not in delay_columns:db.execute(f"ALTER TABLE delay_zones ADD COLUMN {column} {definition}")
         db.execute("UPDATE delay_zones SET last_verified_at=created_at WHERE last_verified_at IS NULL")
+        db.execute("UPDATE delay_zones SET next_review_at=expires_at WHERE next_review_at IS NULL AND expires_at IS NOT NULL")
         db.execute("CREATE INDEX IF NOT EXISTS delay_active_lookup_idx ON delay_zones(status,department,service,zone)")
+        db.execute("CREATE INDEX IF NOT EXISTS delay_review_queue_idx ON delay_zones(status,next_review_at,created_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS delay_department_review_idx ON delay_zones(lower(department),status,next_review_at,created_at DESC)")
         standard_columns={r[1] for r in db.execute("PRAGMA table_info(arrival_standards)").fetchall()}
         for column,definition in {
             "status":"TEXT NOT NULL DEFAULT 'PROVISIONAL'", "source":"TEXT", "reviewed_by":"TEXT",
@@ -323,7 +341,7 @@ def expected_services(value):
 
 def dashboard_snapshot(db,days=30,current_time=None):
     as_of=current_time or datetime.now(timezone.utc);cutoff=(as_of-timedelta(days=days)).isoformat()
-    notice_counts=rows(db,"SELECT status,count(*) total FROM notices GROUP BY status")
+    notice_counts=rows(db,"SELECT status,count(*) total FROM notices WHERE administratively_retired_at IS NULL GROUP BY status")
     active_delays=rows(db,"SELECT * FROM delay_zones WHERE status='VIGENTE'")
     transfer_counts=rows(db,"SELECT status,count(*) total FROM scheduled_transfers GROUP BY status")
     period_delays=rows(db,"SELECT * FROM delay_zones WHERE (created_at>=? AND created_at<=?) OR (normalized_at>=? AND normalized_at<=?)",(cutoff,as_of.isoformat(),cutoff,as_of.isoformat()))
@@ -410,9 +428,39 @@ def request_filters(params):
 
 def filtered_operational_records(db,kind,params,managed_by=""):
     table={"notices":"notices","delays":"delay_zones","transfers":"scheduled_transfers","quotes":"quotes","audit":"audit_events"}[kind]
-    items=rows(db,f"SELECT * FROM {table}")
+    where=" WHERE administratively_retired_at IS NULL" if kind=="notices" else ""
+    items=rows(db,f"SELECT * FROM {table}{where}")
     if kind=="delays":items=[enrich_delay(item) for item in items]
     return filter_report_records(kind,items,request_filters(params),managed_by=managed_by)
+
+
+def paged_delays(db, filters):
+    """Cuenta y pagina en SQLite sin materializar el historial completo."""
+    offset=int(filters.get("offset") or 0);limit=int(filters.get("limit") or 50)
+    if offset<0 or not 1<=limit<=50:raise ValueError("La página debe contener entre 1 y 50 filas")
+    scope=filters.get("scope") or "all"
+    if scope not in {"all","current","review","normalized"}:raise ValueError("Vista de demoras no válida")
+    sort_by=filters.get("sort_by") or "created_at";sort_order=filters.get("sort_order") or "desc"
+    sort_columns={"created_at":"created_at","next_review_at":"COALESCE(next_review_at,expires_at)","department":"department","service":"service","zone":"zone","agent":"agent","status":"status"}
+    if sort_by not in sort_columns or sort_order not in {"asc","desc"}:raise ValueError("Orden de demoras no válido")
+    conditions=[];values=[];deadline="datetime(COALESCE(next_review_at,expires_at,datetime(last_verified_at,'+120 minutes'),datetime(created_at,'+120 minutes')))"
+    if scope=="current":conditions.append(f"status='VIGENTE' AND {deadline}>CURRENT_TIMESTAMP")
+    elif scope=="review":conditions.append(f"status='VIGENTE' AND {deadline}<=CURRENT_TIMESTAMP")
+    elif scope=="normalized":conditions.append("status='NORMALIZADO'")
+    if filters.get("status"):
+        if filters["status"] not in {"VIGENTE","NORMALIZADO"}:raise ValueError("Estado de demora no válido")
+        conditions.append("status=?");values.append(filters["status"])
+    for field in ("department","service"):
+        if filters.get(field):conditions.append(f"lower({field})=lower(?)");values.append(filters[field])
+    for name,operator in (("date_from",">="),("date_to","<=")):
+        if filters.get(name):
+            date.fromisoformat(filters[name]);conditions.append(f"date(datetime(created_at,'-3 hours')) {operator} ?");values.append(filters[name])
+    if filters.get("q"):
+        conditions.append("lower(service||' '||department||' '||zone||' '||message||' '||agent) LIKE lower(?)");values.append(f"%{filters['q']}%")
+    where=" AND ".join(conditions) or "1=1"
+    total=db.execute(f"SELECT count(*) total FROM delay_zones WHERE {where}",values).fetchone()["total"]
+    items=rows(db,f"SELECT * FROM delay_zones WHERE {where} ORDER BY {sort_columns[sort_by]} {sort_order.upper()},id {sort_order.upper()} LIMIT ? OFFSET ?",[*values,limit,offset])
+    return {"items":[enrich_delay(item) for item in items],"total":total,"limit":limit,"offset":offset}
 
 def standard_is_overdue(item):
     due=item.get("review_due_at")
@@ -556,7 +604,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith('/api/wfm/'):return self.wfm_request('GET')
         if path=="/health": return self.send_json({"status":"ok"})
         if not path.startswith("/api/"):
-            if path=="/": self.path="/index.html"
+            # The browser router owns extensionless UI paths. Assets keep their 404s.
+            if path=="/" or (path!="/api" and path!="/static" and not path.startswith("/static/") and not path.rsplit("/",1)[-1].count(".")):
+                self.path="/index.html"
             elif path.startswith("/static/"): self.path=path.removeprefix("/static")
             return super().do_GET()
         if path=="/api/auth/me":
@@ -593,6 +643,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path=="/api/settings/version":
             if not self.require("settings.manage"):return
             return self.send_json(current_release_payload())
+        if path=="/api/schedules/team":
+            actor=self.require('schedules.view')
+            if not actor:return
+            week=str(params.get('week',[""])[0]).strip()
+            try:
+                with connect() as db:result=team_week_snapshot(db.execute,week)
+            except ValueError:return self.send_json({"detail":"La semana indicada no es válida"},400)
+            return self.send_json(result)
         if path=="/api/schedules/people":
             actor=self.require('schedules.view')
             if not actor:return
@@ -620,12 +678,17 @@ class Handler(SimpleHTTPRequestHandler):
                 with connect() as db:result=wfm._published_schedules(db.execute,report_params,False)
             except wfm.WfmError as exc:return self.send_json({"detail":exc.detail},exc.status)
             return self.send_json(result)
+        notice_detail_match=re.fullmatch(r"/api/notices/(\d+)",path)
+        if notice_detail_match:
+            if not self.require("notices.view"):return
+            with connect() as db:item=db.execute("SELECT * FROM notices WHERE id=? AND administratively_retired_at IS NULL",(int(notice_detail_match.group(1)),)).fetchone()
+            return self.send_json(dict(item)) if item else self.send_json({"detail":"Aviso inexistente"},404)
         notice_history_match=re.fullmatch(r"/api/notices/(\d+)/history",path)
         if notice_history_match:
             if not self.require("notices.view"):return
             item_id=int(notice_history_match.group(1))
             with connect() as db:
-                if not db.execute("SELECT 1 FROM notices WHERE id=?",(item_id,)).fetchone():return self.send_json({"detail":"Aviso inexistente"},404)
+                if not db.execute("SELECT 1 FROM notices WHERE id=? AND administratively_retired_at IS NULL",(item_id,)).fetchone():return self.send_json({"detail":"Aviso inexistente"},404)
                 return self.send_json(rows(db,"SELECT * FROM notice_events WHERE notice_id=? ORDER BY created_at DESC,id DESC",(item_id,)))
         if path=="/api/notices/duplicates":
             if not self.require("notices.create"):return
@@ -646,12 +709,14 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 offset=int(value("offset") or 0);limit=int(value("limit") or 50)
                 if limit not in {50,100,150,200} or offset<0 or offset%limit:raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
+                sort_order=value("sort_order") or "desc"
+                if sort_order not in {"asc","desc"}:raise ValueError("Orden de avisos no válido")
                 scope=value("scope") or "open"
                 if scope not in {"open","unassigned","mine","waiting","resolved","all"}:raise ValueError("Vista de avisos no válida")
                 for field in ("date_from","date_to"):
                     if value(field):date.fromisoformat(value(field))
             except ValueError as error:return self.send_json({"detail":str(error)},422)
-            conditions=[];values=[]
+            conditions=["administratively_retired_at IS NULL"];values=[]
             if value("date_from"):conditions.append("date(created_at, '-3 hours')>=?");values.append(value("date_from"))
             if value("date_to"):conditions.append("date(created_at, '-3 hours')<=?");values.append(value("date_to"))
             if value("status"):conditions.append("status=?");values.append(value("status"))
@@ -668,12 +733,11 @@ class Handler(SimpleHTTPRequestHandler):
             elif scope=="mine":chosen.append("managed_by=?");chosen_values.append(actor["display_name"])
             elif scope=="waiting":chosen.append("status='ESPERANDO_RESPUESTA'")
             where=" AND ".join(chosen) or "1=1"
-            order="created_at DESC,id DESC" if scope in {"all","resolved"} else "CASE WHEN trim(coalesce(managed_by,''))='' THEN 0 WHEN status='PENDIENTE' THEN 1 WHEN managed_by=? THEN 2 WHEN status='EN_GESTION' THEN 3 ELSE 4 END,created_at ASC,id ASC"
-            order_values=[] if scope in {"all","resolved"} else [actor["display_name"]]
+            order="created_at ASC,id ASC" if sort_order=="asc" else "created_at DESC,id DESC"
             with connect() as db:
                 counts=db.execute(f"SELECT sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') THEN 1 ELSE 0 END) open,sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') AND trim(coalesce(managed_by,''))='' THEN 1 ELSE 0 END) unassigned,sum(CASE WHEN status NOT IN ('RESUELTO','CANCELADO') AND managed_by=? THEN 1 ELSE 0 END) mine,sum(CASE WHEN status='ESPERANDO_RESPUESTA' THEN 1 ELSE 0 END) waiting FROM notices WHERE {base}",[actor["display_name"],*values]).fetchone()
                 total=db.execute(f"SELECT count(*) total FROM notices WHERE {where}",chosen_values).fetchone()["total"]
-                items=rows(db,f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",[*chosen_values,*order_values,limit,offset])
+                items=rows(db,f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",[*chosen_values,limit,offset])
             return self.send_json({"items":items,"total":total,"limit":limit,"offset":offset,"counts":{key:counts[key] or 0 for key in ("open","unassigned","mine","waiting")}})
         if path in ("/api/notices","/api/reports/notices.csv"):
             permission="reports.export" if path.startswith("/api/reports/") else "notices.view"
@@ -686,6 +750,19 @@ class Handler(SimpleHTTPRequestHandler):
                     audit(db,"report",0,"EXPORTADO",actor["display_name"],json.dumps({"kind":"notices","filters":applied,"rows":len(result)},ensure_ascii=False,sort_keys=True),actor_id=actor["id"],after={"kind":"notices","filters":applied,"rows":len(result)})
             if path.startswith("/api/reports/"):return self.send_bytes(notice_csv_bytes(result),"text/csv; charset=utf-8","reporte_avisos.csv")
             return self.send_json(result)
+        if path=="/api/quotes/geocode":
+            if not self.require("quotes.create"):return
+            try:return self.send_json(search_address(params.get("q", [""])[0],params.get("country", [""])[0] or None))
+            except ValueError as error:return self.send_json({"detail":str(error)},400)
+            except GeocodingUnavailable as error:return self.send_json({"detail":str(error)},503)
+        if path=="/api/quotes/resolve-location":
+            if not self.require("quotes.create"):return
+            value=params.get("q",[""])[0]
+            if len(value)>500:return self.send_json({"detail":"La ubicación es demasiado extensa."},400)
+            try:
+                lat,lon=parse_coordinates(value)
+                return self.send_json({"latitude":lat,"longitude":lon,"inside_uruguay":is_uruguay_point(lat,lon)})
+            except ValueError as error:return self.send_json({"detail":str(error)},400)
         if path=="/api/quotes/history":
             if not self.require("quotes.view"):return
             with connect() as db:
@@ -752,6 +829,18 @@ class Handler(SimpleHTTPRequestHandler):
                 items=rows(db,"SELECT * FROM standard_versions WHERE standard_id=? ORDER BY version DESC",(item_id,))
             for item in items:item["snapshot"]=json.loads(item["snapshot"])
             return self.send_json(items)
+        if path=="/api/delays/geography":
+            if not self.require("delays.view"):return
+            return self.send_json(geography_payload())
+        if path in ("/api/delays", "/api/delays/page"):
+            if not self.require("delays.view"):return
+            try:
+                with connect() as db:return self.send_json(paged_delays(db,request_filters(params)))
+            except (TypeError,ValueError) as exc:return self.send_json({"detail":str(exc)},422)
+        if path=="/api/delays/current":
+            if not self.require("delays.view"):return
+            with connect() as db:items=rows(db,"SELECT * FROM delay_zones WHERE status='VIGENTE' ORDER BY created_at DESC")
+            return self.send_json([enrich_delay(item) for item in items if enrich_delay(item)["is_current"]])
         if path=="/api/delay-metrics":
             if not self.require("delays.view"):return
             try:days=max(1,min(int(params.get("days",["30"])[0]),365))
@@ -786,6 +875,11 @@ class Handler(SimpleHTTPRequestHandler):
             active_delays=[item for item in matching_delays if item["is_current"]];stale_delays=[item for item in matching_delays if item["needs_review"]];recommended=[item for item in standards if item["is_usable"]]
             message="Comunicá la demora vigente; reemplaza temporalmente la referencia habitual." if active_delays else "Hay una demora sin revisión vigente; verificá su estado antes de informar un tiempo." if stale_delays else "No hay una demora vigente para esta consulta; usá una referencia confirmada y vigente." if recommended else "No hay una referencia confirmada y vigente; informá que el arribo debe confirmarse."
             return self.send_json({"department":department,"service":service or None,"zone":zone or None,"precedence":"ACTIVE_DELAY" if active_delays else "REVIEW_REQUIRED" if stale_delays else "STANDARD" if recommended else "NO_CONFIRMED_REFERENCE","operator_message":message,"active_delays":active_delays,"delays_needing_review":stale_delays,"recommended_standards":recommended,"standards":standards})
+        transfer_detail_match=re.fullmatch(r"/api/transfers/(\d+)",path)
+        if transfer_detail_match:
+            if not self.require("transfers.view"):return
+            with connect() as db:item=db.execute("SELECT * FROM scheduled_transfers WHERE id=?",(int(transfer_detail_match.group(1)),)).fetchone()
+            return self.send_json(dict(item)) if item else self.send_json({"detail":"Programado inexistente"},404)
         transfer_history_match=re.fullmatch(r"/api/transfers/(\d+)/events",path)
         if transfer_history_match:
             if not self.require("transfers.view"):return
@@ -818,7 +912,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_json({"detail":"Ruta inexistente"},404)
     def do_POST(self):
         if not self.body_size_guard():return
-        path=urlparse(self.path).path; d=self.payload(); stamp=now(); cfg={"/api/notices":("notices",["task_number","phone","notice_type","audience","detail","communicated_by","managed_by","status","comments"],"notice",d.get("communicated_by","Operador")),"/api/delays":("delay_zones",["service","department","zone","message","minutes","status","agent"],"delay",d.get("agent","Operador")),"/api/transfers":("scheduled_transfers",["task_number","transfer_type","scheduled_date","scheduled_time","origin","destination","provider","planner","status","comments"],"transfer",d.get("planner","Operador"))}
+        path=urlparse(self.path).path; d=self.payload(); stamp=now(); cfg={"/api/notices":("notices",["task_number","phone","notice_type","audience","detail","communicated_by","managed_by","status","comments"],"notice",d.get("communicated_by","Operador")),"/api/delays":("delay_zones",["service","department","zone","message","minutes","minutes_min","minutes_max","instruction_text","status","agent"],"delay",d.get("agent","Operador")),"/api/transfers":("scheduled_transfers",["task_number","transfer_type","scheduled_date","scheduled_time","origin","destination","provider","planner","status","comments"],"transfer",d.get("planner","Operador"))}
         if path not in ("/api/auth/login","/api/auth/google") and not self.csrf_guard():return
         if path=="/api/settings/zones":
             actor=self.require("standards.approve")
@@ -977,14 +1071,18 @@ class Handler(SimpleHTTPRequestHandler):
                 route_segments=[]
                 manual_toll_count=0
                 if manual:
+                    require_manual_region_points(d.get("manual_region_points") or [], parse_coordinates)
                     trip_km,mobile_km=validate_manual_distances(d.get("manual_trip_km"),d.get("manual_mobile_km") if d.get("include_mobile") else 0,bool(d.get("include_mobile")))
                     manual_toll_count=validate_manual_toll_count(d.get("manual_toll_count"),bool(d.get("include_tolls")))
                 else:
-                    origin=parse_coordinates(d["origin"]); destination=parse_coordinates(d["destination"]); trip_route=route_data(origin,destination); trip_km=trip_route["km"]; mobile_km=0
+                    origin=parse_coordinates(d["origin"]); destination=parse_coordinates(d["destination"])
+                    mobile_origin=parse_coordinates(d["mobile_origin"]) if d.get("include_mobile") else None
+                    require_uruguay_points(origin,destination,*((mobile_origin,) if mobile_origin else ()),nearest=nearest_road)
+                    trip_route=route_data(origin,destination); require_near_road(trip_route); require_uruguay_route(trip_route); trip_km=trip_route["km"]; mobile_km=0
                     route_segments.append({"label":"Traslado: origen → destino","color":"#2878b5","coordinates":trip_route["coordinates"]})
                     if d.get("include_mobile"):
-                        mobile_origin=parse_coordinates(d["mobile_origin"]); mobile_route=route_data(mobile_origin,origin); mobile_km=mobile_route["km"]
-                        route_segments.insert(0,{"label":"Salida de la grúa → origen del cliente","color":"#d8872f","coordinates":mobile_route["coordinates"]})
+                        mobile_route=route_data(mobile_origin,origin); require_near_road(mobile_route,"base → origen"); require_uruguay_route(mobile_route,"base → origen"); mobile_km=mobile_route["km"]
+                        route_segments.append({"label":"Salida de la grúa → origen del cliente","color":"#d8872f","coordinates":mobile_route["coordinates"]})
                 with connect() as db:
                     rule=dict(db.execute("SELECT * FROM quote_rules WHERE id=1").fetchone())
                     if gavilan:base=rule["gavilan_uninsured_base" if uninsured else "gavilan_insured_base"]
@@ -1044,6 +1142,8 @@ class Handler(SimpleHTTPRequestHandler):
             elif path=="/api/delays":d["agent"]=actor_user["display_name"]
             else:d["planner"]=actor_user["display_name"]
             if path=="/api/notices":
+                if str(d.get("notice_type") or "").strip().upper()=="REVISIÓN DE DEMORA":
+                    return self.send_json({"detail":"Las revisiones de Demoras pertenecen a Zonas con demora"},422)
                 if len(str(d.get("notice_type") or "").strip())<2 or len(str(d.get("detail") or "").strip())<2:
                     return self.send_json({"detail":"Indique el motivo y detalle del aviso"},400)
                 if str(d.get("audience") or "TODOS") not in NOTICE_AUDIENCES:
@@ -1060,11 +1160,11 @@ class Handler(SimpleHTTPRequestHandler):
                 try:d=normalized_business_data(clean_transfer,d)
                 except ValueError as exc:return self.send_json({"detail":str(exc)},422)
                 d["scheduled_date"]=d["scheduled_date"].isoformat();d["scheduled_time"]=d["scheduled_time"].strftime("%H:%M") if d["scheduled_time"] else None;d["planner"]=actor_user["display_name"];d["status"]="SIN_ASIGNAR";d["allow_duplicate"]=allow_duplicate
-            cfg={"/api/notices":("notices",["task_number","phone","notice_type","audience","detail","communicated_by","managed_by","status","comments"],"notice",d.get("communicated_by")),"/api/delays":("delay_zones",["service","department","zone","message","minutes","status","agent"],"delay",d.get("agent")),"/api/transfers":("scheduled_transfers",["task_number","transfer_type","scheduled_date","scheduled_time","origin","destination","provider","responsible","planner","status","comments"],"transfer",d.get("planner"))}
+            cfg={"/api/notices":("notices",["task_number","phone","notice_type","audience","detail","communicated_by","managed_by","status","comments"],"notice",d.get("communicated_by")),"/api/delays":("delay_zones",["service","department","zone","message","minutes","minutes_min","minutes_max","instruction_text","status","agent"],"delay",d.get("agent")),"/api/transfers":("scheduled_transfers",["task_number","transfer_type","scheduled_date","scheduled_time","origin","destination","provider","responsible","planner","status","comments"],"transfer",d.get("planner"))}
         if path not in cfg: return self.send_json({"detail":"Ruta inexistente"},404)
         table,fields,entity,actor=cfg[path]; defaults={"audience":"TODOS","status":"PENDIENTE","service":"TODAS","message":"Margen de"}; vals=[d.get(f,defaults.get(f)) for f in fields]
-        if table=="notices":extra=["created_at","updated_at"];extra_values=[stamp,stamp]
-        elif table=="delay_zones":extra=["created_at","last_verified_at","expires_at","last_verified_by"];extra_values=[stamp,stamp,(datetime.now(timezone.utc)+timedelta(minutes=d["review_minutes"])).isoformat(),actor_user["display_name"]]
+        if table=="notices":extra=["created_at","updated_at","duplicate_task_key","duplicate_phone_key","duplicate_type_key"];extra_values=[stamp,stamp,*notice_duplicate_keys(d)]
+        elif table=="delay_zones":extra=["created_at","last_verified_at","expires_at","next_review_at","duration_minutes","last_verified_by"];deadline=(datetime.now(timezone.utc)+timedelta(minutes=d["review_minutes"])).isoformat();extra_values=[stamp,stamp,deadline,deadline,d["duration_minutes"],actor_user["display_name"]]
         elif table=="scheduled_transfers":extra=["created_at","updated_at","updated_by"];extra_values=[stamp,stamp,actor_user["display_name"]]
         else:extra=["created_at"];extra_values=[stamp]
         vals+=extra_values;fields+=extra
@@ -1074,10 +1174,11 @@ class Handler(SimpleHTTPRequestHandler):
                     JOIN role_permissions rp ON rp.role_id=u.role_id AND rp.permission='notices.view'
                     WHERE u.active=1 AND u.display_name=? LIMIT 1""",(d["managed_by"],)).fetchone()
                 if not assignee:return self.send_json({"detail":"El responsable debe ser un usuario activo con acceso a Avisos"},400)
-            if table=="notices" and not d.get("allow_duplicate"):
+            if table=="notices":
                 db.execute("BEGIN IMMEDIATE")
-                duplicates=notice_duplicates(db,d)
-                if duplicates:return self.send_json({"detail":{"message":"Ya existe un aviso abierto con esos datos","duplicate":duplicates[0]}},409)
+                if not d.get("allow_duplicate"):
+                    duplicates=notice_duplicates(db,d)
+                    if duplicates:return self.send_json({"detail":{"message":"Ya existe un aviso abierto con esos datos","duplicate":duplicates[0]}},409)
             elif table=="delay_zones":
                 db.execute("BEGIN IMMEDIATE")
                 duplicate=db.execute("SELECT id FROM delay_zones WHERE status='VIGENTE' AND lower(service)=lower(?) AND lower(department)=lower(?) AND lower(zone)=lower(?)",(d["service"],d["department"],d["zone"])).fetchone()
@@ -1089,7 +1190,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if duplicate and not d.get("allow_duplicate"):return self.send_json({"detail":{"message":"Ya existe un programado con la misma tarea, fecha, hora y recorrido","duplicate":dict(duplicate)}},409)
             cur=db.execute(f"INSERT INTO {table} ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",vals)
             if table=="delay_zones":
-                zone_id=ensure_operational_zone(db,d["department"],d["zone"]);db.execute("UPDATE delay_zones SET zone_id=? WHERE id=?",(zone_id,cur.lastrowid));record_delay_event(db,cur.lastrowid,"CREADO",actor,d["message"],extra_values[2])
+                zone_id=ensure_operational_zone(db,d["department"],d["zone"]);db.execute("UPDATE delay_zones SET zone_id=? WHERE id=?",(zone_id,cur.lastrowid));record_delay_event(db,cur.lastrowid,"CREADO",actor,d["message"],extra_values[3])
             elif table=="scheduled_transfers":record_transfer_event(db,cur.lastrowid,"CREADO",actor,new_status="SIN_ASIGNAR",note="Alta confirmada pese a coincidencia" if d.get("allow_duplicate") else None)
             created=dict(db.execute(f"SELECT * FROM {table} WHERE id=?",(cur.lastrowid,)).fetchone())
             audit(db,entity,cur.lastrowid,"CREADO",actor,"Alta confirmada pese a coincidencia abierta" if table=="notices" and d.get("allow_duplicate") else "",actor_id=actor_user["id"],after=created)
@@ -1200,13 +1301,14 @@ class Handler(SimpleHTTPRequestHandler):
             with connect() as db:
                 db.execute("BEGIN IMMEDIATE");current=db.execute("SELECT * FROM scheduled_transfers WHERE id=?",(item_id,)).fetchone()
                 if not current:return self.send_json({"detail":"Registro inexistente"},404)
+                if d.get("expected_revision")!=current["revision"]:return self.send_json({"detail":"El programado cambió desde que lo abriste. Recargá el registro antes de guardar"},409)
                 if normalized_status(current["status"]) in {"FINALIZADO","CANCELADO"}:return self.send_json({"detail":"Un traslado finalizado o cancelado ya no puede editarse"},409)
                 try:ensure_transfer_responsible(db,item.get("responsible"))
                 except ValueError as exc:return self.send_json({"detail":str(exc)},400)
                 if normalized_status(current["status"]) in {"ASIGNADO","EN_CURSO"} and (not item.get("provider") or not item.get("responsible")):return self.send_json({"detail":"El traslado asignado requiere prestador y responsable"},400)
                 duplicate=transfer_duplicate(db,item,item_id)
                 if duplicate and not allow_duplicate:return self.send_json({"detail":{"message":"Ya existe un programado con la misma tarea, fecha, hora y recorrido","duplicate":dict(duplicate)}},409)
-                db.execute(f"UPDATE scheduled_transfers SET {','.join(x+'=?' for x in fields)},updated_at=?,updated_by=? WHERE id=?",[item.get(x) for x in fields]+[stamp,user["display_name"],item_id]);record_transfer_event(db,item_id,"EDITADO",user["display_name"],current["status"],current["status"],"Datos operativos actualizados");updated=db.execute("SELECT * FROM scheduled_transfers WHERE id=?",(item_id,)).fetchone();audit(db,"transfer",item_id,"EDITADO",user["display_name"],item.get("task_number",""),actor_id=user["id"],before=current,after=updated)
+                db.execute(f"UPDATE scheduled_transfers SET {','.join(x+'=?' for x in fields)},updated_at=?,updated_by=?,revision=revision+1 WHERE id=?",[item.get(x) for x in fields]+[stamp,user["display_name"],item_id]);record_transfer_event(db,item_id,"EDITADO",user["display_name"],current["status"],current["status"],"Datos operativos actualizados");updated=db.execute("SELECT * FROM scheduled_transfers WHERE id=?",(item_id,)).fetchone();audit(db,"transfer",item_id,"EDITADO",user["display_name"],item.get("task_number",""),actor_id=user["id"],before=current,after=updated)
             return self.send_json(dict(updated))
         if len(p)==3 and p[0]=="api" and p[1]=="users":
             user=self.require("settings.manage")
@@ -1252,7 +1354,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not user:
                 self.send_json({"detail":"Debe iniciar sesión"},401);return
             with connect() as db:
-                current=db.execute("SELECT * FROM notices WHERE id=?",(item_id,)).fetchone()
+                db.execute("BEGIN IMMEDIATE")
+                current=db.execute("SELECT * FROM notices WHERE id=? AND administratively_retired_at IS NULL",(item_id,)).fetchone()
                 if not current:
                     self.send_json({"detail":"Aviso inexistente"},404);return
                 try:
@@ -1262,6 +1365,8 @@ class Handler(SimpleHTTPRequestHandler):
                 missing=sorted(required-set(user["permissions"]))
                 if missing:
                     self.send_json({"detail":"Su rol no tiene permiso para realizar esta acción"},403);return
+                if d.get("expected_revision")!=current["revision"]:
+                    self.send_json({"detail":"El aviso cambió desde que lo abriste. Recargá el registro antes de guardar"},409);return
                 if "notices.assign" in required and d.get("managed_by"):
                     assignee=db.execute("""SELECT 1 FROM users u
                         JOIN role_permissions rp ON rp.role_id=u.role_id AND rp.permission='notices.view'
@@ -1275,7 +1380,9 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_json({"detail":"Indique el resultado o motivo del cierre"},400);return
                 managed_by=d["managed_by"] if "managed_by" in d else current["managed_by"]
                 comments=d["comments"] if "comments" in d else current["comments"]
-                db.execute("UPDATE notices SET status=?,managed_by=?,comments=?,updated_at=? WHERE id=?",(next_status,managed_by,comments,now(),item_id))
+                changed_fields=[field for field in ("status","managed_by","comments") if field in d]
+                assignments=",".join(f"{field}=?" for field in changed_fields)
+                db.execute(f"UPDATE notices SET {assignments},updated_at=?,revision=revision+1 WHERE id=?",(*[d[field] for field in changed_fields],now(),item_id))
                 changes=[]
                 if next_status!=current["status"]:
                     changes.append(f"estado: {current['status']} → {next_status}");record_notice_event(db,item_id,"ESTADO",user["display_name"],"Cambio de estado",current["status"],next_status)
@@ -1294,8 +1401,10 @@ class Handler(SimpleHTTPRequestHandler):
             audit_action="CAMBIO_ESTADO";audit_detail=d.get("status","NORMALIZADO")
             if kind=="notices" and action=="status": db.execute("UPDATE notices SET status=?,managed_by=COALESCE(?,managed_by),comments=COALESCE(?,comments),updated_at=? WHERE id=?",(d["status"],d.get("managed_by"),d.get("comments"),now(),item_id)); table="notices"; entity="notice"
             elif kind=="transfers" and action=="status":
+                db.execute("BEGIN IMMEDIATE")
                 current=db.execute("SELECT * FROM scheduled_transfers WHERE id=?",(item_id,)).fetchone()
                 if not current:return self.send_json({"detail":"Programado inexistente"},404)
+                if d.get("expected_revision")!=current["revision"]:return self.send_json({"detail":"El programado cambió desde que lo abriste. Recargá el registro antes de guardar"},409)
                 try:change=validate_transition(dict(current),d);ensure_transfer_responsible(db,change["responsible"])
                 except ValueError as exc:return self.send_json({"detail":str(exc)},409 if "No se puede" in str(exc) or "ya se encuentra" in str(exc) else 400)
                 changed_at=now();target=change["status"];assigned_at=current["assigned_at"];started_at=current["started_at"];completed_at=current["completed_at"];cancelled_at=current["cancelled_at"];completion_note=current["completion_note"];cancellation_reason=current["cancellation_reason"];responsible=change["responsible"]
@@ -1304,7 +1413,7 @@ class Handler(SimpleHTTPRequestHandler):
                 elif target=="EN_CURSO":started_at=started_at or changed_at
                 elif target=="FINALIZADO":completed_at=changed_at;completion_note=change["note"]
                 elif target=="CANCELADO":cancelled_at=changed_at;cancellation_reason=change["note"]
-                db.execute("""UPDATE scheduled_transfers SET status=?,provider=?,responsible=?,assigned_at=?,started_at=?,completed_at=?,cancelled_at=?,completion_note=?,cancellation_reason=?,updated_at=?,updated_by=? WHERE id=?""",(target,change["provider"],responsible,assigned_at,started_at,completed_at,cancelled_at,completion_note,cancellation_reason,changed_at,actor,item_id));record_transfer_event(db,item_id,"ESTADO",actor,change["previous_status"],target,change["note"]);table="scheduled_transfers";entity="transfer";audit_detail=f"{change['previous_status']} → {target}"
+                db.execute("""UPDATE scheduled_transfers SET status=?,provider=?,responsible=?,assigned_at=?,started_at=?,completed_at=?,cancelled_at=?,completion_note=?,cancellation_reason=?,updated_at=?,updated_by=?,revision=revision+1 WHERE id=?""",(target,change["provider"],responsible,assigned_at,started_at,completed_at,cancelled_at,completion_note,cancellation_reason,changed_at,actor,item_id));record_transfer_event(db,item_id,"ESTADO",actor,change["previous_status"],target,change["note"]);table="scheduled_transfers";entity="transfer";audit_detail=f"{change['previous_status']} → {target}"
             elif kind=="delays" and action=="verify":
                 note=str(d.get("verification_note") or "").strip()
                 try:review_minutes=int(d.get("review_minutes",120))
@@ -1313,14 +1422,14 @@ class Handler(SimpleHTTPRequestHandler):
                 current=db.execute("SELECT * FROM delay_zones WHERE id=?",(item_id,)).fetchone()
                 if not current:return self.send_json({"detail":"Demora inexistente"},404)
                 if current["status"]!="VIGENTE":return self.send_json({"detail":"La demora ya no está vigente"},409)
-                verified=now();expires=(datetime.now(timezone.utc)+timedelta(minutes=review_minutes)).isoformat();db.execute("UPDATE delay_zones SET last_verified_at=?,expires_at=?,last_verified_by=? WHERE id=?",(verified,expires,actor,item_id));record_delay_event(db,item_id,"VERIFICADO",actor,note,expires);table="delay_zones";entity="delay";audit_action="VERIFICADO";audit_detail=note
+                verified=now();expires=(datetime.now(timezone.utc)+timedelta(minutes=review_minutes)).isoformat();db.execute("UPDATE delay_zones SET last_verified_at=?,expires_at=?,next_review_at=?,last_verified_by=? WHERE id=?",(verified,expires,expires,actor,item_id));record_delay_event(db,item_id,"VERIFICADO",actor,note,expires);table="delay_zones";entity="delay";audit_action="VERIFICADO";audit_detail=note
             elif kind=="delays" and action=="normalize":
                 note=str(d.get("resolution_note") or "").strip()
-                if len(note)<2 or len(note)>500:return self.send_json({"detail":"Indique cómo se confirmó la normalización"},422)
+                if len(note)>500:return self.send_json({"detail":"El detalle de normalización supera 500 caracteres"},422)
                 current=db.execute("SELECT * FROM delay_zones WHERE id=?",(item_id,)).fetchone()
                 if not current:return self.send_json({"detail":"Demora inexistente"},404)
                 if current["status"]!="VIGENTE":return self.send_json({"detail":"La demora ya no está vigente"},409)
-                closed=now();db.execute("UPDATE delay_zones SET status='NORMALIZADO',normalized_at=?,normalized_by=?,resolution_note=?,last_verified_at=?,last_verified_by=? WHERE id=?",(closed,actor,note,closed,actor,item_id));record_delay_event(db,item_id,"NORMALIZADO",actor,note);table="delay_zones";entity="delay"
+                closed=now();db.execute("UPDATE delay_zones SET status='NORMALIZADO',normalized_at=?,normalized_by=?,resolution_note=?,last_verified_at=?,last_verified_by=? WHERE id=?",(closed,actor,note or None,closed,actor,item_id));record_delay_event(db,item_id,"NORMALIZADO",actor,note or None);table="delay_zones";entity="delay";audit_action="NORMALIZADO";audit_detail=note or "Normalización directa"
             else: return self.send_json({"detail":"Ruta inexistente"},404)
             item=db.execute(f"SELECT * FROM {table} WHERE id=?",(item_id,)).fetchone();audit(db,entity,item_id,audit_action,actor,audit_detail,actor_id=user["id"],before=current,after=item)
         result=dict(item) if item else {"detail":"Registro inexistente"}

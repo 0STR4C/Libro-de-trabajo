@@ -1,35 +1,32 @@
-# Validación completa local
+# Validación técnica local
 
-Ejecuta, en orden, la suite general dentro de un contenedor sin red y con el
-proyecto montado en modo de solo lectura, la comprobación sintáctica de los
-archivos JavaScript y la suite PostgreSQL aislada obligatoria. Si Playwright ya
-está instalado en `tools/wfm_offline_build/node_modules`, también ejecuta la
-prueba de interfaz con datos simulados; si falta, informa la omisión sin
-descargar paquetes.
-
-Desde la raíz del proyecto:
+`run.ps1` ejecuta Python, Node y Vite dentro de Docker, sin instalar paquetes ni
+usar la base operativa. La suite general usa la imagen de pruebas Pytest existente
+para casos de dominio y la suite PostgreSQL usa un proyecto Compose único por
+corrida. La compilación Vite ocurre en el contenedor y descarta sus salidas.
 
 ```powershell
 & .\tools\test_all\run.ps1
 ```
 
-Para probar otra imagen local:
+Las imágenes predeterminadas son `librodetrabajo-app:latest`,
+`librodetrabajo-delays-pytest:local`, `librodetrabajo-frontend-check:latest` y
+`node:22-alpine`. Para otra versión, indicar la imagen de aplicación y la imagen
+Pytest derivada de ella:
 
 ```powershell
-& .\tools\test_all\run.ps1 -ImageName centro-wfm-candidate:latest
+& .\tools\test_all\run.ps1 -ImageName app-candidata:local -PytestImageName pruebas-candidatas:local
 ```
 
-Entradas: código del proyecto, una imagen local compatible y las imágenes ya
-disponibles que usa `tools/postgres_test_db`. Salidas: resultados en consola y,
-si se ejecuta, el perfil temporal que Playwright elimina al terminar. El script
-no modifica bases operativas, archivos del proyecto ni servicios de la
-aplicación. La suite PostgreSQL crea una base aleatoria, la elimina y detiene su
-servidor conservando el volumen y `test_operativa`.
+El resultado identifica cada etapa aprobada, fallida, omitida o bloqueada.
+`-SkipUiSmoke` se mantiene por compatibilidad y registra la omisión. Las pruebas
+de navegador históricas usan `legacy_archive` y no validan la interfaz React.
+Las ocho suites de layout antiguas se conservan como registro histórico y están
+marcadas como omitidas; Vite solo valida compilación, no interacción visual.
+`-Coverage` informa que el medidor opcional no está disponible en la imagen
+actual. Ninguna de estas limitaciones se anuncia como validación visual completa.
 
-La opción `-Coverage` usa el módulo estándar `trace` para mostrar cobertura por
-módulo de la suite general, sin instalar dependencias ni conservar datos. La
-cobertura PostgreSQL se evalúa por sus pruebas de integración y no se mezcla con
-ese porcentaje, porque corre en otro contenedor y otra base.
-
-La opción `-SkipUiSmoke` omite explícitamente la prueba visual. No sustituye la
-suite PostgreSQL y se reserva para entornos que no tengan Playwright.
+Las pruebas PostgreSQL crean y eliminan únicamente los recursos del proyecto
+efímero de esa ejecución. Para un caso específico, usar
+`tools/postgres_test_db/run.ps1` con `-TestCommand`. No se comparten el puerto,
+el volumen ni el contenedor de la base manual `librodetrabajo-tests`.

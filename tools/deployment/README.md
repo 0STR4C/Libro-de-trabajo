@@ -48,11 +48,18 @@ los secretos vacíos. Las modificaciones futuras de este contrato requieren
 actualizar también esas comprobaciones de forma explícita.
 
 `package_server.py` empaqueta archivos fuente del inventario Git y las nuevas
-guías de despliegue. Lee únicamente app/frontend/tools/tests/legacy_archive y
+guías de despliegue. Detiene la creación si detecta código de `app/` o
+`frontend/` fuera del inventario. Cada módulo aún no seguido debe indicarse con
+`--include RUTA` o incorporarse conscientemente a Git; nunca se incluyen todos
+los archivos nuevos automáticamente. Lee únicamente app/frontend/tools/tests/legacy_archive y
 los archivos raíz técnicos permitidos. Excluye datos, credenciales locales,
 respaldos, node_modules, skills de desarrollo y artefactos. Conserva las
 herramientas con sus manuales; no cambia los originales ni los contenedores.
 Los scripts shell se incluyen con finales LF para Linux.
+
+Antes de entregar, repetir la validación Compose con y sin `--profile workers`,
+y con `APP_PORT=18099`. El validador comprueba también el servicio opcional de
+revisión cuando está presente.
 
 Requisitos: `dependencies.txt`; no hay paquetes Python adicionales que instalar.
 Ejecutar Python exclusivamente dentro de Docker. Desde la raíz en PowerShell:
@@ -63,11 +70,21 @@ $archiveName = "Libro-de-trabajo-servidor-$revision-$(Get-Date -Format yyyyMMdd-
 New-Item -ItemType Directory -Path artifacts/server-package -Force | Out-Null
 $inventory = @(git -c core.quotepath=false ls-files)
 $packaging = @('tools/deployment/package_server.py', 'tools/deployment/SERVER_INSTALL.md', 'tools/deployment/server.env.example', 'tools/deployment/dependencies.txt')
-($inventory + $packaging) | docker run --rm -i --pull=never --network none --mount "type=bind,source=${PWD},target=/project,readonly" --mount "type=bind,source=${PWD}/artifacts/server-package,target=/output" librodetrabajo-app:latest python /project/tools/deployment/package_server.py --root /project --output "/output/$archiveName" --revision "$revision"
+$extra = @() # Revisar y enumerar explícitamente los nuevos módulos necesarios.
+$changed = @(git -c core.quotepath=false diff --name-only)
+$arguments = @('run','--rm','-i','--pull=never','--network','none','--mount',"type=bind,source=${PWD},target=/project,readonly",'--mount',"type=bind,source=${PWD}/artifacts/server-package,target=/output",'librodetrabajo-app:latest','python','/project/tools/deployment/package_server.py','--root','/project','--output',"/output/$archiveName",'--revision',"$revision")
+foreach ($path in $extra) { $arguments += @('--include',$path) }
+foreach ($path in $changed) { $arguments += @('--changed-path',$path) }
+($inventory + $packaging) | docker @arguments
 ```
 
 Entradas: inventario por stdin y fuentes de trabajo (incluye cambios locales en
-los archivos inventariados, no es una exportación exacta de HEAD). Salidas: ZIP
+los archivos inventariados, no es una exportación exacta de HEAD). El comando
+admite `--include RUTA` para fuentes nuevas y `--changed-path RUTA` para
+identificar cambios locales. El manifiesto registra revisión de referencia,
+estado del árbol, rutas adicionales y hash del contenido real. Sin declaración
+de cambios indica `working_tree_unverified`; nunca presume coincidencia con el
+commit. Salidas: ZIP
 y `.zip.sha256` nuevos, nunca sobrescritos. Verifica CRC, hashes internos y
 presencia de entradas esenciales antes de informar `integrity: OK`. Esta es la
 comprobación reproducible mínima del paquete; no ejecuta pruebas de la base.
@@ -77,6 +94,16 @@ El ZIP incorpora `.env.example` sin secretos, `INSTALACION_SERVIDOR.md`,
 Dockerfile sin exportar precargas privadas. La instalación requiere construir
 la imagen en el servidor y configurar HTTPS. No incluye imágenes Docker ni
 datos operativos; la restauración de PostgreSQL se gestiona por separado.
+El empaquetador incluye `frontend/routes.js` y `docs/NAVEGACION_URL.md`; al
+reconstruir la imagen en el servidor Vite genera el bundle con las rutas vigentes.
+
+Para verificar una entrega, extraer el ZIP a una carpeta nueva dentro de
+`artifacts/server-package/` y usar **solo esa carpeta** como contexto de build.
+Una construcción completa sin red puede quedar bloqueada si las capas de
+`pip install` o `npm ci` no están en el caché local. En ese caso comprobar la
+importación del backend y compilar Vite desde la carpeta extraída con las
+imágenes locales de Python y frontend; registrar que la construcción completa
+quedó bloqueada, sin atribuirle el resultado de esas comprobaciones parciales.
 
 ## Verificar el contrato de Sistemas sin modificar servicios
 

@@ -30,6 +30,8 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
       OSM_TILE_CACHE_DIR: /var/cache/librodetrabajo/osm-tiles
+      GEOCODER_URL: ${GEOCODER_URL:-}
+      OSRM_BASE_URL: ${OSRM_BASE_URL:-https://router.project-osrm.org}
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}

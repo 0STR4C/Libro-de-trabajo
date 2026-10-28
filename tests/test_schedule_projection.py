@@ -8,6 +8,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app import wfm
+from app.schedule_read import team_week_snapshot
 from app.scheduling import find_schedule_conflict, schedule_interval
 
 
@@ -100,6 +101,41 @@ class ScheduleProjectionTests(unittest.TestCase):
                                                 '05:00', '08:00')[0], 'overlap')
         self.assertIsNone(find_schedule_conflict([night], '2027-01-01', 'Mañana',
                                                  '08:00', '12:00'))
+
+    def test_team_snapshot_keeps_history_and_hides_private_details(self):
+        self.revision('2026-12-28', 1, True, [{
+            'user_id': 1, 'start': 16, 'end': 32,
+            'segments': [{'start': 16, 'end': 20}, {'start': 24, 'end': 32}],
+            'break': 26, 'break_duration': 1, 'overtime_slots': 2,
+            'exceptions': [{'type': 'Personal', 'note': 'privado'}],
+        }])
+        self.revision('2026-12-29', 1, False, [])
+        self.revision('2026-12-30', 1, True, [])
+        self.db.execute("INSERT INTO work_schedules VALUES(10,3,'2026-12-31','2026-12-28',"
+                        "'Telefonista','Noche','22:00','06:00','nota privada','Supervisor','2026-12-01','2026-12-01')")
+        self.db.execute("INSERT INTO work_schedules VALUES(11,3,'2026-12-31','2026-12-28',"
+                        "'Telefonista','Tarde','14:00','18:00','otra nota','Supervisor','2026-12-01','2026-12-01')")
+        snapshot = team_week_snapshot(self.db.execute, '2027-01-01')
+        self.assertEqual(snapshot['week'], '2026-12-28')
+        self.assertEqual({person['id'] for person in snapshot['people']}, {1, 2, 3})
+        self.assertEqual(len([row for row in snapshot['rows'] if row['user_id'] == 3
+                              and row['schedule_date'] == '2026-12-31']), 2)
+        monday = next(row for row in snapshot['rows'] if row['schedule_date'] == '2026-12-28'
+                      and row['user_id'] == 1)
+        self.assertEqual(monday['segments'], [{'start': 16, 'end': 20}, {'start': 24, 'end': 32}])
+        self.assertEqual((monday['break_slot'], monday['overtime_slots']), (26, 2))
+        self.assertTrue(any(row['published_day'] for row in snapshot['rows']
+                            if row['schedule_date'] == '2026-12-30'))
+        self.assertFalse(any(row['schedule_date'] == '2026-12-29' for row in snapshot['rows']))
+        self.assertTrue(all(not {'notes', 'exceptions', 'reason', 'actor_id', 'created_by', 'draft_day'}
+                            .intersection(row) for row in snapshot['rows']))
+
+    def test_team_snapshot_includes_night_from_previous_iso_week(self):
+        self.db.execute("INSERT INTO work_schedules VALUES(12,3,'2026-12-27','2026-12-21',"
+                        "'Telefonista','Noche','22:00','06:00','privado','Supervisor','2026-12-01','2026-12-01')")
+        snapshot = team_week_snapshot(self.db.execute, '2026-12-28')
+        self.assertEqual([row['end_slot'] for row in snapshot['rows']], [60])
+        self.assertEqual({person['id'] for person in snapshot['people']}, {1, 2, 3})
 
 
 @unittest.skipUnless(os.getenv('DATABASE_URL'), 'requiere PostgreSQL temporal')

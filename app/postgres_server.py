@@ -32,6 +32,7 @@ from .application import (
 from .identity import (
     ALLOWED_GOOGLE_DOMAIN,
     parse_coordinates,
+    nearest_road,
     route_data,
     valid_corporate_email,
     verify_google_id_token,
@@ -39,6 +40,9 @@ from .identity import (
 from .notices import (
     NOTICE_CLOSED_STATUSES,
     NOTICE_STATUSES,
+    ensure_notice_duplicate_lookup,
+    notice_duplicate_keys,
+    notice_duplicate_lock_keys,
     notice_duplicates,
     notice_update_permissions,
 )
@@ -54,12 +58,17 @@ from .quotes import (
     validate_manual_distances,
 )
 from .tolls import detect_toll_passes
+from .quote_geography import is_uruguay_point, require_manual_region_points, require_near_road, require_uruguay_points, require_uruguay_route
+from .quote_geocoding import GeocodingUnavailable, search_address
 from .tile_proxy import TileProxyError, fetch_osm_tile
+from .delays import DEPARTMENTS, DELAY_REVIEW_DEADLINE_SQL, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
+from .geography import geography_payload
+from .delay_map_stats import map_delay_stats
 from .arrival_times_api import register_arrival_times_routes
-from .delays import DEPARTMENTS, DELAY_SERVICES, STANDARD_SERVICES, clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
 from .dashboard import build_dashboard_payload
 from .reporting import filter_report_records, normalized_report_filters, notice_csv_bytes, report_csv_bytes
 from .scheduling import find_schedule_conflict, schedule_conflict_message, schedule_date_value, schedule_time_text
+from .schedule_read import team_week_snapshot
 from .schemas import ArrivalStandardIn, DelayIn, DelayNormalizeIn, DelayVerifyIn, GoogleAccessIn, GoogleLoginIn, LoginIn, NoticeIn, NoticeUpdateIn, PermissionsIn, QuoteIn, QuoteRulesIn, RoleCreateIn, ScheduleCopyIn, ScheduleIn, StandardDecisionIn, StatusIn, TollIn, TransferEdit, TransferIn, TransferStatusIn, UserCreateIn, UserUpdateIn, ZoneCoverageIn
 from .transfers import TRANSFER_STATUSES, clean_transfer, normalized_status, validate_transition
 from .security import (
@@ -155,6 +164,41 @@ CREATE INDEX IF NOT EXISTS arrival_times_filter_idx
     ON arrival_times(department,service,is_active,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS arrival_times_status_idx
     ON arrival_times(is_active,created_at DESC,id DESC);
+"""
+ARRIVAL_TIMES_SCHEMA_V2="""
+ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS indication_type TEXT NOT NULL DEFAULT 'TIME';
+ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS minutes_min INTEGER;
+ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS minutes_max INTEGER;
+ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS zone_members TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE arrival_times ALTER COLUMN base_estimated_minutes DROP NOT NULL;
+UPDATE arrival_times SET zone_members=ARRAY(
+    SELECT btrim(part) FROM regexp_split_to_table(zone, ',') AS part WHERE btrim(part) <> ''
+) WHERE zone<>'Todo el departamento' AND cardinality(zone_members)=0;
+CREATE INDEX IF NOT EXISTS arrival_times_members_idx ON arrival_times USING gin(zone_members) WHERE is_active=TRUE;
+DO $arrival_shape$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='arrival_times_indication_shape_chk') THEN
+        ALTER TABLE arrival_times ADD CONSTRAINT arrival_times_indication_shape_chk CHECK (
+            (indication_type='TIME' AND base_estimated_minutes BETWEEN 1 AND 1440 AND minutes_min IS NULL AND minutes_max IS NULL)
+            OR (indication_type='MAXIMUM' AND base_estimated_minutes IS NULL AND minutes_min IS NULL AND minutes_max BETWEEN 1 AND 1440)
+            OR (indication_type='INTERVAL' AND base_estimated_minutes IS NULL AND minutes_min BETWEEN 1 AND 1440 AND minutes_max BETWEEN 1 AND 1440 AND minutes_min<=minutes_max)
+            OR (indication_type='TO_CONFIRM' AND base_estimated_minutes IS NULL AND minutes_min IS NULL AND minutes_max IS NULL)
+        );
+    END IF;
+END $arrival_shape$;
+"""
+ARRIVAL_TIMES_SCHEMA_V3="""
+ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS source_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS arrival_times_source_key_idx ON arrival_times(source_key) WHERE source_key IS NOT NULL;
+DO $arrival_shape_v3$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='arrival_times_indication_shape_v3_chk') THEN
+        ALTER TABLE arrival_times ADD CONSTRAINT arrival_times_indication_shape_v3_chk CHECK (
+            (indication_type='TIME' AND base_estimated_minutes IS NOT NULL AND base_estimated_minutes BETWEEN 1 AND 1440 AND minutes_min IS NULL AND minutes_max IS NULL)
+            OR (indication_type='MAXIMUM' AND base_estimated_minutes IS NULL AND minutes_min IS NULL AND minutes_max IS NOT NULL AND minutes_max BETWEEN 1 AND 1440)
+            OR (indication_type='INTERVAL' AND base_estimated_minutes IS NULL AND minutes_min IS NOT NULL AND minutes_max IS NOT NULL AND minutes_min BETWEEN 1 AND 1440 AND minutes_max BETWEEN 1 AND 1440 AND minutes_min<=minutes_max)
+            OR (indication_type='TO_CONFIRM' AND base_estimated_minutes IS NULL AND minutes_min IS NULL AND minutes_max IS NULL)
+        );
+    END IF;
+END $arrival_shape_v3$;
 """
 TRANSFER_EVENTS_SCHEMA="""
 CREATE TABLE IF NOT EXISTS transfer_events(id BIGSERIAL PRIMARY KEY,transfer_id BIGINT NOT NULL REFERENCES scheduled_transfers(id) ON DELETE CASCADE,event_type TEXT NOT NULL,actor TEXT NOT NULL,previous_status TEXT,new_status TEXT,note TEXT,created_at TIMESTAMPTZ NOT NULL);
@@ -331,9 +375,35 @@ def filtered_transfers(database, date_from="", date_to="", status="", transfer_t
 
 def filtered_operational_records(database,kind,filters=None,managed_by=""):
     table={"notices":"notices","delays":"delay_zones","transfers":"scheduled_transfers","quotes":"quotes","audit":"audit_events"}[kind]
-    items=rows(database,f"SELECT * FROM {table}")
+    where = " WHERE administratively_retired_at IS NULL" if kind == "notices" else ""
+    items=rows(database,f"SELECT * FROM {table}{where}")
     if kind=="delays":items=[enrich_delay(item) for item in items]
     return filter_report_records(kind,items,filters or {},managed_by=managed_by)
+
+
+def retire_delay_review_notices(database):
+    """Retira avisos del worker por vínculo de origen, sin modificar su estado operativo."""
+    retired = database.execute("""UPDATE notices SET administratively_retired_at=%s
+        WHERE source_delay_id IS NOT NULL AND administratively_retired_at IS NULL
+          AND administratively_restored_at IS NULL
+        RETURNING id,source_delay_id""", (now(),)).fetchall()
+    for item in retired:
+        record_notice_event(database, item["id"], "RETIRO_ADMINISTRATIVO", "Sistema",
+            f"Aviso automático retirado de la operación; demora vinculada #{item['source_delay_id']}")
+    return len(retired)
+
+
+def restore_administratively_retired_notice(database, notice_id, actor, reason):
+    """Restituye una exclusión administrativa revisada, conservando el vínculo histórico."""
+    if not str(actor).strip() or not str(reason).strip():
+        raise ValueError("Indique responsable y motivo de la restitución")
+    item = database.execute("""UPDATE notices SET administratively_retired_at=NULL,
+        administratively_restored_at=%s WHERE id=%s AND administratively_retired_at IS NOT NULL
+        RETURNING id""", (now(), notice_id)).fetchone()
+    if item:
+        record_notice_event(database, notice_id, "RESTITUCION_ADMINISTRATIVA", actor,
+            reason)
+    return bool(item)
 
 
 def initialize():
@@ -341,8 +411,19 @@ def initialize():
         database.execute(SCHEMA)
         database.execute(NOTICE_EVENTS_SCHEMA)
         database.execute(ARRIVAL_TIMES_SCHEMA)
-        database.execute("ALTER TABLE arrival_times ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+        database.execute(ARRIVAL_TIMES_SCHEMA_V2)
+        database.execute(ARRIVAL_TIMES_SCHEMA_V3)
         database.execute(TRANSFER_EVENTS_SCHEMA)
+        for table in ("notices", "scheduled_transfers", "arrival_times", "roles", "users", "quote_rules", "toll_catalog"):
+            database.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+        database.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1")
+        database.execute("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT")
+        ensure_notice_duplicate_lookup(database, postgres=True)
+        database.execute("UPDATE schema_migrations SET checksum=%s WHERE key='notice_duplicate_lookup_v1' AND checksum IS NULL",(hashlib.sha256(b"notice_duplicate_lookup_v1").hexdigest(),))
+        database.execute("""INSERT INTO schema_migrations(key,applied_at,checksum)
+            VALUES(%s,%s,%s) ON CONFLICT(key) DO NOTHING""",
+            ("optimistic_revisions_v1", now(), hashlib.sha256(b"notices,scheduled_transfers,arrival_times:revision:1").hexdigest()))
         database.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_id BIGINT")
         database.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_name TEXT")
         database.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS before_data TEXT")
@@ -352,7 +433,8 @@ def initialize():
         if not database.execute("SELECT 1 FROM schema_migrations WHERE key=%s",("audit_contract_v2",)).fetchone():
             database.execute("UPDATE audit_events SET actor_name=COALESCE(actor_name,actor),source=CASE WHEN correlation_id IS NULL THEN 'migration' ELSE COALESCE(source,'web') END,correlation_id=COALESCE(correlation_id,'legacy-'||id::text)")
             database.execute("UPDATE audit_events a SET actor_id=(SELECT min(u.id) FROM users u WHERE u.display_name=a.actor_name) WHERE actor_id IS NULL")
-            database.execute("INSERT INTO schema_migrations(key,applied_at) VALUES(%s,%s)",("audit_contract_v2",now()))
+            database.execute("INSERT INTO schema_migrations(key,applied_at,checksum) VALUES(%s,%s,%s)",("audit_contract_v2",now(),hashlib.sha256(b"audit_contract_v2").hexdigest()))
+        database.execute("UPDATE schema_migrations SET checksum=%s WHERE key='audit_contract_v2' AND checksum IS NULL",(hashlib.sha256(b"audit_contract_v2").hexdigest(),))
         database.execute("CREATE INDEX IF NOT EXISTS audit_entity_record_idx ON audit_events(entity,entity_id,created_at DESC,id DESC)")
         database.execute("CREATE INDEX IF NOT EXISTS audit_actor_idx ON audit_events(actor_id,created_at DESC,id DESC)")
         database.execute("""CREATE OR REPLACE FUNCTION prevent_audit_event_changes() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -380,6 +462,8 @@ def initialize():
             # existentes que ya conservaron su checksum original.
             ("postgres_core_v4", SCHEMA),
             ("arrival_times_schema_v1", ARRIVAL_TIMES_SCHEMA),
+            ("arrival_times_schema_v2", ARRIVAL_TIMES_SCHEMA_V2),
+            ("arrival_times_schema_v3", ARRIVAL_TIMES_SCHEMA_V3),
             ("postgres_wfm_v2", WFM_SCHEMA),
             ("postgres_compat_v1", "quotes.toll_count,toll_details,toll_price;app_sessions.last_seen_at"),
         )
@@ -429,10 +513,26 @@ def initialize():
         database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS resolution_note TEXT")
         database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMPTZ")
         database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS next_review_at TIMESTAMPTZ")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS duration_minutes INTEGER")
         database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS last_verified_by TEXT")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS minutes_min INTEGER")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS minutes_max INTEGER")
+        database.execute("ALTER TABLE delay_zones ADD COLUMN IF NOT EXISTS instruction_text TEXT")
+        # Los campos heredados de avisos automáticos se conservan para el historial.
+        database.execute("ALTER TABLE notices ADD COLUMN IF NOT EXISTS source_delay_id BIGINT REFERENCES delay_zones(id)")
+        database.execute("ALTER TABLE notices ADD COLUMN IF NOT EXISTS source_review_due_at TIMESTAMPTZ")
+        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS notice_delay_review_unique_idx ON notices(source_delay_id,source_review_due_at) WHERE source_delay_id IS NOT NULL")
+        database.execute("ALTER TABLE notices ADD COLUMN IF NOT EXISTS administratively_retired_at TIMESTAMPTZ")
+        database.execute("ALTER TABLE notices ADD COLUMN IF NOT EXISTS administratively_restored_at TIMESTAMPTZ")
+        retire_delay_review_notices(database)
         database.execute("UPDATE delay_zones SET last_verified_at=created_at WHERE last_verified_at IS NULL")
+        database.execute("UPDATE delay_zones SET next_review_at=expires_at WHERE next_review_at IS NULL AND expires_at IS NOT NULL")
         database.execute("CREATE INDEX IF NOT EXISTS delay_zones_status_created_idx ON delay_zones(status,created_at DESC)")
+        database.execute("CREATE INDEX IF NOT EXISTS delay_review_queue_idx ON delay_zones(status,next_review_at,created_at DESC)")
         database.execute("CREATE INDEX IF NOT EXISTS delay_zones_location_idx ON delay_zones(department,service)")
+        database.execute("CREATE INDEX IF NOT EXISTS delay_department_review_idx ON delay_zones(lower(department),status,next_review_at,created_at DESC)")
+        database.execute("CREATE INDEX IF NOT EXISTS delay_map_active_idx ON delay_zones(upper(btrim(department))) INCLUDE (service,zone,next_review_at,expires_at,last_verified_at,created_at) WHERE status='VIGENTE'")
         database.execute("ALTER TABLE arrival_standards ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PROVISIONAL'")
         database.execute("ALTER TABLE arrival_standards ADD COLUMN IF NOT EXISTS source TEXT")
         database.execute("ALTER TABLE arrival_standards ADD COLUMN IF NOT EXISTS reviewed_by TEXT")
@@ -620,7 +720,7 @@ def expected_services(value):
 
 def dashboard_snapshot(database,days=30,current_time=None):
     as_of=current_time or now();cutoff=as_of-timedelta(days=days)
-    notice_counts=rows(database,"SELECT status,count(*) total FROM notices GROUP BY status")
+    notice_counts=rows(database,"SELECT status,count(*) total FROM notices WHERE administratively_retired_at IS NULL GROUP BY status")
     active_delays=rows(database,"SELECT * FROM delay_zones WHERE status='VIGENTE'")
     transfer_counts=rows(database,"SELECT status,count(*) total FROM scheduled_transfers GROUP BY status")
     period_delays=rows(database,"SELECT * FROM delay_zones WHERE (created_at>=%s AND created_at<=%s) OR (normalized_at>=%s AND normalized_at<=%s)",(cutoff,as_of,cutoff,as_of))
@@ -1095,12 +1195,14 @@ def update_permissions(role_id: int, request: Request, data: PermissionsIn = Bod
     actor = authorized(request, "settings.manage")
     valid = list(dict.fromkeys(item for item in data.get("permissions", []) if item in PERMISSIONS))
     with connect() as database:
-        role = database.execute("SELECT name FROM roles WHERE id=%s", (role_id,)).fetchone()
+        role = database.execute("SELECT name,revision FROM roles WHERE id=%s FOR UPDATE", (role_id,)).fetchone()
         if not role: raise HTTPException(404, "Rol inexistente")
         if role["name"] == "Administrador": raise HTTPException(400, "Los permisos del Administrador son obligatorios y no se pueden modificar")
+        if data["expected_revision"] != role["revision"]: raise HTTPException(409, "Los permisos cambiaron desde que los abriste. Recargá el rol antes de guardar")
         before=_audit_snapshot(database,"role",role_id)
         database.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))
         execute_many(database, "INSERT INTO role_permissions(role_id,permission) VALUES(%s,%s)", [(role_id, item) for item in valid])
+        database.execute("UPDATE roles SET revision=revision+1 WHERE id=%s", (role_id,))
         audit(database,"role",role_id,"PERMISOS_ACTUALIZADOS",actor["display_name"],", ".join(valid),actor_id=actor["id"],before=before)
     return {"ok": True}
 
@@ -1109,7 +1211,7 @@ def update_permissions(role_id: int, request: Request, data: PermissionsIn = Bod
 def users(request: Request):
     authorized(request, "settings.manage")
     with connect() as database:
-        return rows(database, "SELECT u.id,u.username,u.email,(u.google_sub IS NOT NULL) google_linked,u.display_name,u.active,u.role_id,r.name role_name FROM users u JOIN roles r ON r.id=u.role_id ORDER BY u.display_name")
+        return rows(database, "SELECT u.id,u.username,u.email,(u.google_sub IS NOT NULL) google_linked,u.display_name,u.active,u.role_id,u.revision,r.name role_name FROM users u JOIN roles r ON r.id=u.role_id ORDER BY u.display_name")
 
 
 
@@ -1138,14 +1240,15 @@ def update_user(user_id: int, request: Request, data: UserUpdateIn = Body(...)):
     if data.get("password") and len(data["password"]) < 12: raise HTTPException(400, "La contraseña debe tener al menos 12 caracteres")
     try:
         with connect() as database:
-            previous = database.execute("SELECT * FROM users WHERE id=%s", (user_id,)).fetchone()
+            previous = database.execute("SELECT * FROM users WHERE id=%s FOR UPDATE", (user_id,)).fetchone()
             if not previous: raise HTTPException(404, "Usuario inexistente")
+            if data["expected_revision"] != previous["revision"]: raise HTTPException(409, "El usuario cambió desde que lo abriste. Recargá la lista antes de guardar")
             ensure_active_admin_survives(database, user_id, int(data["role_id"]), bool(data.get("active", True)))
             google_sub = None if str(previous["email"] or "").lower() != email else database.execute("SELECT google_sub FROM users WHERE id=%s", (user_id,)).fetchone()["google_sub"]
             if data.get("password"):
-                database.execute("UPDATE users SET display_name=%s,email=%s,role_id=%s,active=%s,password_hash=%s,google_sub=%s WHERE id=%s", (data["display_name"], email, int(data["role_id"]), bool(data.get("active", True)), hash_password(data["password"]), google_sub, user_id))
+                database.execute("UPDATE users SET display_name=%s,email=%s,role_id=%s,active=%s,password_hash=%s,google_sub=%s,revision=revision+1 WHERE id=%s", (data["display_name"], email, int(data["role_id"]), bool(data.get("active", True)), hash_password(data["password"]), google_sub, user_id))
             else:
-                database.execute("UPDATE users SET display_name=%s,email=%s,role_id=%s,active=%s,google_sub=%s WHERE id=%s", (data["display_name"], email, int(data["role_id"]), bool(data.get("active", True)), google_sub, user_id))
+                database.execute("UPDATE users SET display_name=%s,email=%s,role_id=%s,active=%s,google_sub=%s,revision=revision+1 WHERE id=%s", (data["display_name"], email, int(data["role_id"]), bool(data.get("active", True)), google_sub, user_id))
             security_identity_changed = (
                 bool(data.get("password"))
                 or not bool(data.get("active", True))
@@ -1162,8 +1265,9 @@ def update_user(user_id: int, request: Request, data: UserUpdateIn = Body(...)):
 @app.get("/api/settings/google-access")
 def google_access(request: Request):
     authorized(request, "settings.manage")
-    with connect() as database: client_id = setting(database, "google_client_id")
-    return {"client_id": client_id, "allowed_domain": ALLOWED_GOOGLE_DOMAIN, "enabled": bool(client_id)}
+    with connect() as database: current = database.execute("SELECT value,revision FROM app_settings WHERE key='google_client_id'").fetchone()
+    client_id = current["value"] if current else ""
+    return {"client_id": client_id, "allowed_domain": ALLOWED_GOOGLE_DOMAIN, "enabled": bool(client_id), "revision": current["revision"] if current else 1}
 
 
 @app.patch("/api/settings/google-access")
@@ -1172,8 +1276,10 @@ def update_google_access(request: Request, data: GoogleAccessIn = Body(...)):
     actor = authorized(request, "settings.manage"); client_id = str(data.get("client_id") or "").strip()
     if client_id and not re.fullmatch(r"\d+-[a-z0-9_-]+\.apps\.googleusercontent\.com", client_id, re.I): raise HTTPException(400, "El ID de cliente OAuth de Google no tiene un formato válido")
     with connect() as database:
-        previous=database.execute("SELECT value FROM app_settings WHERE key='google_client_id'").fetchone()
-        database.execute("INSERT INTO app_settings(key,value) VALUES('google_client_id',%s) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", (client_id,))
+        database.execute("INSERT INTO app_settings(key,value) VALUES('google_client_id','') ON CONFLICT(key) DO NOTHING")
+        previous=database.execute("SELECT value,revision FROM app_settings WHERE key='google_client_id' FOR UPDATE").fetchone()
+        if data["expected_revision"] != previous["revision"]: raise HTTPException(409, "La configuración de Google cambió desde que la abriste. Recargá los datos antes de guardar")
+        database.execute("UPDATE app_settings SET value=%s,revision=revision+1 WHERE key='google_client_id'", (client_id,))
         audit(database,"settings",1,"GOOGLE_ACTUALIZADO",actor["display_name"],"Activado" if client_id else "Desactivado",actor_id=actor["id"],before={"enabled":bool(previous and previous["value"])},after={"enabled":bool(client_id)})
     return {"ok": True, "enabled": bool(client_id)}
 
@@ -1182,6 +1288,18 @@ def update_google_access(request: Request, data: GoogleAccessIn = Body(...)):
 def version(request: Request):
     authorized(request, "settings.manage")
     return current_release_payload()
+
+@app.get("/api/schedules/team")
+def published_team_schedules(request: Request, week: str):
+    authorized(request, "schedules.view")
+    try:
+        with connect() as database:
+            def query(sql, args=()):
+                return database.execute(sql.replace('?', '%s'), args)
+            return team_week_snapshot(query, week, postgres=True)
+    except ValueError as error:
+        raise HTTPException(400, "La semana indicada no es válida") from error
+
 
 @app.get("/api/schedules/people")
 def schedule_people_list(request: Request):
@@ -1246,14 +1364,15 @@ def update_quote_rules(request: Request, data: QuoteRulesIn = Body(...)):
     legacy_fields = ["insured_base", "uninsured_base", "special_insured_base", "special_uninsured_base", "gavilan_base", "included_km", "extra_km_rate", "special_extra_km_rate"]
     fields = legacy_fields + [field for field in QUOTE_RULE_EXTRA_COLUMNS if field in data]
     with connect() as database:
-        current = database.execute("SELECT * FROM quote_rules WHERE id=1").fetchone()
+        current = database.execute("SELECT * FROM quote_rules WHERE id=1 FOR UPDATE").fetchone()
+        if data["expected_revision"] != current["revision"]: raise HTTPException(409, "Las tarifas cambiaron desde que las abriste. Recargá los valores antes de guardar")
         try:
             values = [float(data[field] if field in data else current[field]) for field in fields]
             validate_quote_rule_values(fields, values)
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, "Las tarifas y kilómetros deben ser numéricos y estar dentro del rango permitido") from exc
         assignments = ",".join(f"{field}=%s" for field in fields)
-        database.execute(f"UPDATE quote_rules SET {assignments},updated_at=%s WHERE id=1", values + [now()])
+        database.execute(f"UPDATE quote_rules SET {assignments},updated_at=%s,revision=revision+1 WHERE id=1", values + [now()])
         audit(database,"quote_rules",1,"ACTUALIZADO",actor["display_name"],actor_id=actor["id"],before=current)
     return {"ok": True}
 
@@ -1278,9 +1397,10 @@ def create_toll(request: Request, data: TollIn = Body(...)):
 def update_toll(item_id: int, request: Request, data: TollIn = Body(...)):
     data=data.model_dump(); actor=authorized(request, "settings.manage")
     with connect() as database:
-        current=database.execute("SELECT * FROM toll_catalog WHERE id=%s",(item_id,)).fetchone()
+        current=database.execute("SELECT * FROM toll_catalog WHERE id=%s FOR UPDATE",(item_id,)).fetchone()
         if not current:raise HTTPException(404,'Peaje inexistente')
-        item=database.execute("UPDATE toll_catalog SET name=%s,latitude=%s,longitude=%s,price=%s,active=%s,updated_at=%s WHERE id=%s RETURNING id",(data['name'].strip(),data['latitude'],data['longitude'],data['price'],data['active'],now(),item_id)).fetchone()
+        if data['expected_revision'] != current['revision']:raise HTTPException(409,'El peaje cambió desde que lo abriste. Recargá la lista antes de guardar')
+        item=database.execute("UPDATE toll_catalog SET name=%s,latitude=%s,longitude=%s,price=%s,active=%s,updated_at=%s,revision=revision+1 WHERE id=%s RETURNING id",(data['name'].strip(),data['latitude'],data['longitude'],data['price'],data['active'],now(),item_id)).fetchone()
         audit(database,'toll',item_id,'ACTUALIZADO',actor['display_name'],data['name'].strip(),actor_id=actor['id'],before=current)
     return {'ok':True}
 
@@ -1546,7 +1666,7 @@ LISTS = {
 
 
 def filtered_notices(database, date_from="", date_to="", status="", task="", contact="", q="", scope="", managed_by="", limit=None):
-    query = "SELECT * FROM notices WHERE TRUE"; values = []
+    query = "SELECT * FROM notices WHERE administratively_retired_at IS NULL"; values = []
     if date_from: query += " AND created_at >= %s::date"; values.append(date_from)
     if date_to: query += " AND created_at < (%s::date + interval '1 day')"; values.append(date_to)
     if status: query += " AND status=%s"; values.append(status)
@@ -1571,11 +1691,13 @@ NOTICE_PAGE_SIZE = 50
 NOTICE_PAGE_SIZES = {50, 100, 150, 200}
 
 
-def paged_notices(database, filters, managed_by, offset=0, limit=NOTICE_PAGE_SIZE):
+def paged_notices(database, filters, managed_by, offset=0, limit=NOTICE_PAGE_SIZE, sort_order="desc"):
     """Filtra y cuenta en PostgreSQL; nunca materializa el conjunto completo."""
     if limit not in NOTICE_PAGE_SIZES or offset < 0 or offset % limit:
         raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
-    conditions = []
+    if sort_order not in {"asc", "desc"}:
+        raise ValueError("Orden de avisos no válido")
+    conditions = ["administratively_retired_at IS NULL"]
     values = []
     local_date = "(created_at AT TIME ZONE 'America/Montevideo')::date"
     for key, operator in (("date_from", ">="), ("date_to", "<=")):
@@ -1617,19 +1739,19 @@ def paged_notices(database, filters, managed_by, offset=0, limit=NOTICE_PAGE_SIZ
         selected.append("status='ESPERANDO_RESPUESTA'")
     where = " AND ".join(selected) or "TRUE"
     total = database.execute(f"SELECT COUNT(*) AS total FROM notices WHERE {where}", selected_values).fetchone()["total"]
-    order = "created_at DESC, id DESC" if scope in {"all", "resolved"} else "CASE WHEN COALESCE(BTRIM(managed_by),'')='' THEN 0 WHEN status='PENDIENTE' THEN 1 WHEN managed_by=%s THEN 2 WHEN status='EN_GESTION' THEN 3 ELSE 4 END, created_at ASC, id ASC"
-    order_values = [] if scope in {"all", "resolved"} else [managed_by]
-    items = rows(database, f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", (*selected_values, *order_values, limit, offset))
+    order = "created_at ASC, id ASC" if sort_order == "asc" else "created_at DESC, id DESC"
+    items = rows(database, f"SELECT * FROM notices WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", (*selected_values, limit, offset))
     return {"items": items, "total": total, "limit": limit, "offset": offset, "counts": dict(metrics)}
 
 
-def paged_operational_records(database, kind, filters, offset=0, limit=NOTICE_PAGE_SIZE):
+def paged_operational_records(database, kind, filters, offset=0, limit=NOTICE_PAGE_SIZE, as_of=None):
     """Página acotada de registros filtrada en SQL, sin cargar la tabla completa."""
     if kind not in {"delays", "audit"}:
         raise ValueError("Listado no válido")
     if limit not in NOTICE_PAGE_SIZES or offset < 0 or offset % limit:
         raise ValueError("Use 50, 100, 150 o 200 filas y un desplazamiento múltiplo de ese valor")
     table = {"delays": "delay_zones", "audit": "audit_events"}[kind]
+    instant = as_of or now()
     date_field = "(created_at AT TIME ZONE 'America/Montevideo')::date"
     conditions, values = [], []
     for name, operator in (("date_from", ">="), ("date_to", "<=")):
@@ -1638,10 +1760,10 @@ def paged_operational_records(database, kind, filters, offset=0, limit=NOTICE_PA
             conditions.append(f"{date_field} {operator} %s::date")
             values.append(filters[name])
     if kind == "delays":
-        deadline = "COALESCE(expires_at,last_verified_at + interval '120 minutes',created_at + interval '120 minutes')"
+        deadline = DELAY_REVIEW_DEADLINE_SQL
         scope = filters.get("scope") or ""
-        if scope == "current": conditions.append(f"status='VIGENTE' AND {deadline}>CURRENT_TIMESTAMP")
-        elif scope == "review": conditions.append(f"status='VIGENTE' AND {deadline}<=CURRENT_TIMESTAMP")
+        if scope == "current": conditions.append(f"status='VIGENTE' AND {deadline}>%s"); values.append(instant)
+        elif scope == "review": conditions.append(f"status='VIGENTE' AND {deadline}<=%s"); values.append(instant)
         elif scope == "normalized": conditions.append("status='NORMALIZADO'")
         elif scope not in {"", "all"}: raise ValueError("Vista de demoras no válida")
         if filters.get("status"):
@@ -1666,8 +1788,39 @@ def paged_operational_records(database, kind, filters, offset=0, limit=NOTICE_PA
     where = " AND ".join(conditions) or "TRUE"
     total = database.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE {where}", values).fetchone()["total"]
     items = rows(database, f"SELECT * FROM {table} WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s", (*values, limit, offset))
-    if kind == "delays": items = [enrich_delay(item) for item in items]
+    if kind == "delays": items = [enrich_delay(item, instant) for item in items]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def paged_delays(database, filters, offset=0, limit=50, sort_by="created_at", sort_order="desc", as_of=None):
+    """Consulta operativa de demoras, filtrada y ordenada en PostgreSQL."""
+    if offset < 0 or not 1 <= limit <= 50:
+        raise ValueError("La página debe contener entre 1 y 50 filas")
+    columns={"created_at":"created_at","next_review_at":DELAY_REVIEW_DEADLINE_SQL,"department":"department","service":"service","zone":"zone","agent":"agent","status":"status"}
+    if sort_by not in columns or sort_order not in {"asc","desc"}:
+        raise ValueError("Orden de demoras no válido")
+    scope=filters.get("scope") or "all"
+    if scope not in {"all","current","review","normalized"}:
+        raise ValueError("Vista de demoras no válida")
+    conditions=[];values=[];instant=as_of or now()
+    deadline=DELAY_REVIEW_DEADLINE_SQL
+    if scope=="current":conditions.append(f"status='VIGENTE' AND {deadline}>%s");values.append(instant)
+    elif scope=="review":conditions.append(f"status='VIGENTE' AND {deadline}<=%s");values.append(instant)
+    elif scope=="normalized":conditions.append("status='NORMALIZADO'")
+    if filters.get("status"):
+        if filters["status"] not in {"VIGENTE","NORMALIZADO"}:raise ValueError("Estado de demora no válido")
+        conditions.append("status=%s");values.append(filters["status"])
+    for name in ("department","service"):
+        if filters.get(name):conditions.append(f"LOWER({name})=LOWER(%s)");values.append(filters[name])
+    for name,operator in (("date_from",">="),("date_to","<=")):
+        if filters.get(name):
+            date.fromisoformat(filters[name]);conditions.append(f"(created_at AT TIME ZONE 'America/Montevideo')::date {operator} %s::date");values.append(filters[name])
+    if filters.get("q"):
+        conditions.append("CONCAT_WS(' ',service,department,zone,message,agent) ILIKE %s");values.append(f"%{filters['q']}%")
+    where=" AND ".join(conditions) or "TRUE"
+    total=database.execute(f"SELECT count(*) total FROM delay_zones WHERE {where}",values).fetchone()["total"]
+    items=rows(database,f"SELECT * FROM delay_zones WHERE {where} ORDER BY {columns[sort_by]} {sort_order.upper()} NULLS LAST,id {sort_order.upper()} LIMIT %s OFFSET %s",(*values,limit,offset))
+    return {"items":[enrich_delay(item, instant) for item in items],"total":total,"limit":limit,"offset":offset}
 
 
 def operational_page(kind: str, request: Request, offset: int = 0, limit: int = NOTICE_PAGE_SIZE, date_from: str = "", date_to: str = "", status: str = "", scope: str = "", department: str = "", service: str = "", entity: str = "", entity_id: str = "", action: str = "", actor_id: str = "", q: str = ""):
@@ -1676,13 +1829,14 @@ def operational_page(kind: str, request: Request, offset: int = 0, limit: int = 
     authorized(request, required[kind])
     filters = {"date_from": date_from, "date_to": date_to, "status": status, "scope": scope, "department": department, "service": service, "entity": entity, "entity_id": entity_id, "action": action, "actor_id": actor_id, "q": q}
     try:
-        with connect() as database: return paged_operational_records(database, kind, filters, offset, limit)
+        with connect() as database:
+            return paged_delays(database,filters,offset,limit) if kind=="delays" else paged_operational_records(database, kind, filters, offset, limit)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
 
 @app.get("/api/notices/page")
-def notices_page(request: Request, date_from: str = "", date_to: str = "", status: str = "", task: str = "", contact: str = "", q: str = "", scope: str = "open", offset: int = 0, limit: int = NOTICE_PAGE_SIZE):
+def notices_page(request: Request, date_from: str = "", date_to: str = "", status: str = "", task: str = "", contact: str = "", q: str = "", scope: str = "open", offset: int = 0, limit: int = NOTICE_PAGE_SIZE, sort_order: str = "desc"):
     actor = authorized(request, "notices.view")
     filters = {"date_from": date_from, "date_to": date_to, "status": status, "task": task, "contact": contact, "q": q, "scope": scope}
     try:
@@ -1690,12 +1844,37 @@ def notices_page(request: Request, date_from: str = "", date_to: str = "", statu
             if value:
                 date.fromisoformat(value)
         with connect() as database:
-            return paged_notices(database, filters, actor["display_name"], offset, limit)
+            return paged_notices(database, filters, actor["display_name"], offset, limit, sort_order)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
 
 
 app.add_api_route("/api/{kind}/page", operational_page, methods=["GET"])
+
+
+@app.get("/api/delays/geography")
+def delay_geography(request: Request):
+    authorized(request,"delays.view")
+    return geography_payload()
+
+
+@app.get("/api/delays/current")
+def current_delays(request: Request):
+    authorized(request,"delays.view")
+    instant=now()
+    with connect() as database:
+        items=rows(database,f"SELECT * FROM delay_zones WHERE status='VIGENTE' AND {DELAY_REVIEW_DEADLINE_SQL}>%s ORDER BY created_at DESC",(instant,))
+    return [enrich_delay(item,instant) for item in items]
+
+
+@app.get("/api/delays")
+def delays_list(request: Request, date_from: str = "", date_to: str = "", status: str = "", scope: str = "", department: str = "", service: str = "", q: str = "", offset: int = 0, limit: int = 50, sort_by: str = "created_at", sort_order: str = "desc"):
+    authorized(request,"delays.view")
+    filters={"date_from":date_from,"date_to":date_to,"status":status,"scope":scope,"department":department,"service":service,"q":q}
+    try:
+        with connect() as database:return paged_delays(database,filters,offset,limit,sort_by,sort_order)
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from error
 
 
 @app.get("/api/notices")
@@ -1719,14 +1898,23 @@ def notice_assignees(request: Request):
 def notice_duplicate_candidates(request: Request, task_number: str = "", phone: str = "", notice_type: str = ""):
     authorized(request, "notices.create")
     with connect() as database:
-        return notice_duplicates(database, {"task_number": task_number, "phone": phone, "notice_type": notice_type})
+        return notice_duplicates(database, {"task_number": task_number, "phone": phone, "notice_type": notice_type}, postgres=True)
+
+
+@app.get("/api/notices/{item_id}")
+def notice_detail(item_id:int,request:Request):
+    authorized(request,"notices.view")
+    with connect() as database:
+        item=database.execute("SELECT * FROM notices WHERE id=%s AND administratively_retired_at IS NULL",(item_id,)).fetchone()
+    if not item:raise HTTPException(404,"Aviso inexistente")
+    return item
 
 
 @app.get("/api/notices/{item_id}/history")
 def notice_history(item_id: int, request: Request):
     authorized(request, "notices.view")
     with connect() as database:
-        if not database.execute("SELECT 1 FROM notices WHERE id=%s", (item_id,)).fetchone():
+        if not database.execute("SELECT 1 FROM notices WHERE id=%s AND administratively_retired_at IS NULL", (item_id,)).fetchone():
             raise HTTPException(404, "Aviso inexistente")
         return rows(database, "SELECT * FROM notice_events WHERE notice_id=%s ORDER BY created_at DESC,id DESC", (item_id,))
 
@@ -1797,6 +1985,13 @@ def dashboard(request: Request):
     with connect() as database:return dashboard_snapshot(database)
 
 
+@app.get("/api/dashboard/map-stats")
+def dashboard_map_stats(request: Request):
+    authorized(request, "dashboard.view")
+    with connect() as database:
+        return map_delay_stats(database)
+
+
 @app.get("/api/transfers/duplicates")
 def transfer_duplicates(request: Request, task_number: str, transfer_type: str, scheduled_date: date, scheduled_time: str = "", origin: str = "", destination: str = ""):
     authorized(request,"transfers.view")
@@ -1812,6 +2007,15 @@ def transfer_responsibles(request: Request):
     with connect() as database:
         return rows(database,"""SELECT DISTINCT u.display_name,r.name role_name FROM users u JOIN roles r ON r.id=u.role_id
             JOIN role_permissions rp ON rp.role_id=u.role_id WHERE u.active=TRUE AND rp.permission='transfers.view' ORDER BY u.display_name""")
+
+
+@app.get("/api/transfers/{item_id}")
+def transfer_detail(item_id:int,request:Request):
+    authorized(request,"transfers.view")
+    with connect() as database:
+        item=database.execute("SELECT * FROM scheduled_transfers WHERE id=%s",(item_id,)).fetchone()
+    if not item:raise HTTPException(404,"Programado inexistente")
+    return item
 
 
 @app.get("/api/transfers/{item_id}/events")
@@ -1880,7 +2084,7 @@ def create_schedule(request: Request, data: dict = Body(...)):
 
 CREATE_CONFIG = {
     "notices": ("notices.create", "notices", ["task_number", "phone", "notice_type", "audience", "detail", "communicated_by", "managed_by", "status", "comments"], "notice"),
-    "delays": ("delays.create", "delay_zones", ["service", "department", "zone", "message", "minutes", "status", "agent"], "delay"),
+    "delays": ("delays.create", "delay_zones", ["service", "department", "zone", "message", "minutes", "minutes_min", "minutes_max", "instruction_text", "status", "agent"], "delay"),
     "transfers": ("transfers.create", "scheduled_transfers", ["task_number", "transfer_type", "scheduled_date", "scheduled_time", "origin", "destination", "provider", "responsible", "planner", "status", "comments"], "transfer"),
 }
 
@@ -1893,6 +2097,8 @@ def create_item(kind: str, request: Request, data: dict = Body(...)):
     allow_duplicate = bool(data.pop("allow_duplicate", False)) if kind in {"notices","transfers"} else False
     if kind == "notices":
         data["status"] = "PENDIENTE"
+        if data["notice_type"].strip().upper() == "REVISIÓN DE DEMORA":
+            raise HTTPException(422,"Las revisiones de Demoras pertenecen a Zonas con demora")
         if data.get("managed_by") and "notices.assign" not in user["permissions"]:
             raise HTTPException(403, "Su rol no tiene permiso para asignar avisos")
     elif kind == "delays":
@@ -1902,8 +2108,8 @@ def create_item(kind: str, request: Request, data: dict = Body(...)):
     actor_field = {"notices": "communicated_by", "delays": "agent", "transfers": "planner"}[kind]; data[actor_field] = user["display_name"]
     defaults = {"audience": "TODOS", "status": "PENDIENTE", "service": "TODAS", "message": "Margen de"}
     values = [data.get(field, defaults.get(field)) for field in fields]; stamp = now()
-    if table == "notices":extra=["created_at","updated_at"];extra_values=[stamp,stamp]
-    elif table == "delay_zones":extra=["created_at","last_verified_at","expires_at","last_verified_by"];extra_values=[stamp,stamp,stamp+timedelta(minutes=data["review_minutes"]),user["display_name"]]
+    if table == "notices":extra=["created_at","updated_at","duplicate_task_key","duplicate_phone_key","duplicate_type_key"];extra_values=[stamp,stamp,*notice_duplicate_keys(data)]
+    elif table == "delay_zones":extra=["created_at","last_verified_at","expires_at","next_review_at","duration_minutes","last_verified_by"];deadline=stamp+timedelta(minutes=data["review_minutes"]);extra_values=[stamp,stamp,deadline,deadline,data["duration_minutes"],user["display_name"]]
     elif table == "scheduled_transfers":extra=["created_at","updated_at","updated_by"];extra_values=[stamp,stamp,user["display_name"]]
     else:extra=["created_at"];extra_values=[stamp]
     columns = fields + extra; values += extra_values; placeholders = ",".join(["%s"] * len(columns))
@@ -1914,10 +2120,13 @@ def create_item(kind: str, request: Request, data: dict = Body(...)):
                 WHERE u.active=TRUE AND u.display_name=%s LIMIT 1""", (data["managed_by"],)).fetchone()
             if not assignee:
                 raise HTTPException(400, "El responsable debe ser un usuario activo con acceso a Avisos")
-        if kind == "notices" and not allow_duplicate:
-            duplicates = notice_duplicates(database, data)
-            if duplicates:
-                raise HTTPException(409, {"message": "Ya existe un aviso abierto con esos datos", "duplicate": duplicates[0]})
+        if kind == "notices":
+            for key in notice_duplicate_lock_keys(data):
+                database.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (key,))
+            if not allow_duplicate:
+                duplicates = notice_duplicates(database, data, postgres=True)
+                if duplicates:
+                    raise HTTPException(409, {"message": "Ya existe un aviso abierto con esos datos", "duplicate": duplicates[0]})
         if kind == "delays":
             delay_key=f"delay|{normalized_key(data['department'])}|{normalized_key(data['service'])}|{normalized_key(data['zone'])}"
             database.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",(delay_key,))
@@ -1947,6 +2156,29 @@ def create_item(kind: str, request: Request, data: dict = Body(...)):
     return enrich_delay(item) if kind=="delays" else item
 
 
+@app.get("/api/quotes/geocode")
+def quote_geocode(request: Request, q: str = "", country: str = ""):
+    authorized(request, "quotes.create")
+    try:
+        return search_address(q, country or None)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except GeocodingUnavailable as error:
+        raise HTTPException(503, str(error)) from error
+
+
+@app.get("/api/quotes/resolve-location")
+def quote_resolve_location(request: Request, q: str = ""):
+    authorized(request, "quotes.create")
+    if len(q) > 500:
+        raise HTTPException(400, "La ubicación es demasiado extensa.")
+    try:
+        lat, lon = parse_coordinates(q)
+        return {"latitude": lat, "longitude": lon, "inside_uruguay": is_uruguay_point(lat, lon)}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
 @app.post("/api/quotes/calculate", status_code=201)
 def calculate_quote(request: Request, data: QuoteIn = Body(...)):
     data = data.model_dump()
@@ -1957,14 +2189,18 @@ def calculate_quote(request: Request, data: QuoteIn = Body(...)):
         segments = []
         manual_toll_count = 0
         if manual:
+            require_manual_region_points(data.get("manual_region_points") or [], parse_coordinates)
             trip_km,mobile_km = validate_manual_distances(data.get("manual_trip_km"),data.get("manual_mobile_km") if data.get("include_mobile") else 0,bool(data.get("include_mobile")))
             manual_toll_count = validate_manual_toll_count(data.get("manual_toll_count"),bool(data.get("include_tolls")))
         else:
-            trip = route_data(parse_coordinates(data["origin"]), parse_coordinates(data["destination"])); trip_km = trip["km"]; mobile_km = 0
+            origin = parse_coordinates(data["origin"]); destination = parse_coordinates(data["destination"])
+            mobile_origin = parse_coordinates(data["mobile_origin"]) if data.get("include_mobile") else None
+            require_uruguay_points(origin, destination, *((mobile_origin,) if mobile_origin else ()), nearest=nearest_road)
+            trip = route_data(origin, destination); require_near_road(trip); require_uruguay_route(trip); trip_km = trip["km"]; mobile_km = 0
             segments.append({"label": "Traslado: origen → destino", "color": "#2878b5", "coordinates": trip["coordinates"]})
             if data.get("include_mobile"):
-                mobile = route_data(parse_coordinates(data["mobile_origin"]), parse_coordinates(data["origin"])); mobile_km = mobile["km"]
-                segments.insert(0, {"label": "Salida de la grúa → origen del cliente", "color": "#d8872f", "coordinates": mobile["coordinates"]})
+                mobile = route_data(mobile_origin, origin); require_near_road(mobile, "base → origen"); require_uruguay_route(mobile, "base → origen"); mobile_km = mobile["km"]
+                segments.append({"label": "Salida de la grúa → origen del cliente", "color": "#d8872f", "coordinates": mobile["coordinates"]})
         with connect() as database:
             rule = database.execute("SELECT * FROM quote_rules WHERE id=1").fetchone(); base = rule["gavilan_uninsured_base" if uninsured else "gavilan_insured_base"] if gavilan else rule["special_uninsured_base"] if special and uninsured else rule["special_insured_base"] if special else rule["uninsured_base"] if uninsured else rule["insured_base"]
             rate = rule["special_extra_km_uninsured_rate" if uninsured else "special_extra_km_insured_rate"] if special else rule["extra_km_uninsured_rate" if uninsured else "extra_km_insured_rate"]
@@ -1992,7 +2228,7 @@ def notice_status(item_id: int, request: Request, data: NoticeUpdateIn = Body(..
         raise HTTPException(400, "Indique un estado, responsable o comentario")
     user = current_user(request)
     with connect() as database:
-        current = database.execute("SELECT * FROM notices WHERE id=%s FOR UPDATE", (item_id,)).fetchone()
+        current = database.execute("SELECT * FROM notices WHERE id=%s AND administratively_retired_at IS NULL FOR UPDATE", (item_id,)).fetchone()
         if not current:
             raise HTTPException(404, "Aviso inexistente")
         try:
@@ -2002,6 +2238,8 @@ def notice_status(item_id: int, request: Request, data: NoticeUpdateIn = Body(..
         missing = sorted(required - set(user["permissions"]))
         if missing:
             raise HTTPException(403, "Su rol no tiene permiso para realizar esta acción")
+        if data["expected_revision"] != current["revision"]:
+            raise HTTPException(409, "El aviso cambió desde que lo abriste. Recargá el registro antes de guardar")
         if "notices.assign" in required and data.get("managed_by"):
             assignee = database.execute("""SELECT 1 FROM users u
                 JOIN role_permissions rp ON rp.role_id=u.role_id AND rp.permission='notices.view'
@@ -2015,9 +2253,11 @@ def notice_status(item_id: int, request: Request, data: NoticeUpdateIn = Body(..
             raise HTTPException(400, "Indique el resultado o motivo del cierre")
         managed_by = data["managed_by"] if "managed_by" in data else current["managed_by"]
         comments = data["comments"] if "comments" in data else current["comments"]
+        changed_fields = [field for field in ("status", "managed_by", "comments") if field in data]
+        assignments = ",".join(f"{field}=%s" for field in changed_fields)
         item = database.execute(
-            "UPDATE notices SET status=%s,managed_by=%s,comments=%s,updated_at=%s WHERE id=%s RETURNING *",
-            (next_status, managed_by, comments, now(), item_id),
+            f"UPDATE notices SET {assignments},updated_at=%s,revision=revision+1 WHERE id=%s RETURNING *",
+            (*[data[field] for field in changed_fields], now(), item_id),
         ).fetchone()
         changes = []
         if next_status != current["status"]:
@@ -2043,12 +2283,15 @@ def delay_event_history(item_id:int,request:Request):
 
 @app.patch("/api/delays/{item_id}/verify")
 def verify_delay(item_id: int, request: Request, data: DelayVerifyIn = Body(...)):
-    user=authorized(request,"delays.normalize");stamp=now()
+    user=authorized(request,"delays.normalize")
     with connect() as database:
         current=database.execute("SELECT * FROM delay_zones WHERE id=%s FOR UPDATE",(item_id,)).fetchone()
         if not current:raise HTTPException(404,"Demora inexistente")
         if current["status"]!="VIGENTE":raise HTTPException(409,"La demora ya no está vigente")
-        item=database.execute("UPDATE delay_zones SET last_verified_at=%s,expires_at=%s,last_verified_by=%s WHERE id=%s RETURNING *",(stamp,stamp+timedelta(minutes=data.review_minutes),user["display_name"],item_id)).fetchone()
+        if data.expected_revision!=current["revision"]:raise HTTPException(409,"La demora cambió desde que la abriste. Revisá los datos actuales antes de guardar")
+        stamp=now()
+        deadline=stamp+timedelta(minutes=data.review_minutes)
+        item=database.execute("UPDATE delay_zones SET last_verified_at=%s,expires_at=%s,next_review_at=%s,last_verified_by=%s,revision=revision+1 WHERE id=%s RETURNING *",(stamp,deadline,deadline,user["display_name"],item_id)).fetchone()
         record_delay_event(database,item_id,"VERIFICADO",user["display_name"],data.verification_note.strip(),item["expires_at"])
         audit(database,"delay",item_id,"VERIFICADO",user["display_name"],data.verification_note.strip(),actor_id=user["id"],before=current,after=item)
     return enrich_delay(item)
@@ -2062,11 +2305,13 @@ def normalize_delay(item_id: int, request: Request, data: DelayNormalizeIn = Bod
         current=database.execute("SELECT * FROM delay_zones WHERE id=%s FOR UPDATE",(item_id,)).fetchone()
         if not current: raise HTTPException(404, "Demora inexistente")
         if current["status"] != "VIGENTE": raise HTTPException(409,"La demora ya no está vigente")
+        if data["expected_revision"] != current["revision"]: raise HTTPException(409,"La demora cambió desde que la abriste. Revisá los datos actuales antes de guardar")
+        note=(data.get("resolution_note") or "").strip() or None
         stamp=now();item = database.execute("""UPDATE delay_zones SET status='NORMALIZADO',normalized_at=%s,
-            normalized_by=%s,resolution_note=%s,last_verified_at=%s,last_verified_by=%s WHERE id=%s RETURNING *""",
-            (stamp,user["display_name"],data["resolution_note"].strip(),stamp,user["display_name"],item_id)).fetchone()
-        record_delay_event(database,item_id,"NORMALIZADO",user["display_name"],data["resolution_note"].strip())
-        audit(database,"delay",item_id,"NORMALIZADO",user["display_name"],data["resolution_note"].strip(),actor_id=user["id"],before=current,after=item)
+            normalized_by=%s,resolution_note=%s,last_verified_at=%s,last_verified_by=%s,revision=revision+1 WHERE id=%s RETURNING *""",
+            (stamp,user["display_name"],note,stamp,user["display_name"],item_id)).fetchone()
+        record_delay_event(database,item_id,"NORMALIZADO",user["display_name"],note)
+        audit(database,"delay",item_id,"NORMALIZADO",user["display_name"],note or "Normalización directa",actor_id=user["id"],before=current,after=item)
     return enrich_delay(item)
 
 
@@ -2107,6 +2352,7 @@ def transfer_status(item_id: int, request: Request, data: TransferStatusIn = Bod
     with connect() as database:
         current = database.execute("SELECT * FROM scheduled_transfers WHERE id=%s FOR UPDATE",(item_id,)).fetchone()
         if not current: raise HTTPException(404, "Programado inexistente")
+        if data["expected_revision"] != current["revision"]: raise HTTPException(409,"El programado cambió desde que lo abriste. Recargá el registro antes de guardar")
         try:change=validate_transition(dict(current),data)
         except ValueError as exc:raise HTTPException(409 if "No se puede" in str(exc) or "ya se encuentra" in str(exc) else 400,str(exc)) from exc
         ensure_transfer_responsible(database,change["responsible"])
@@ -2125,7 +2371,7 @@ def transfer_status(item_id: int, request: Request, data: TransferStatusIn = Bod
         elif target=="CANCELADO":cancelled_at=stamp;cancellation_reason=change["note"]
         item=database.execute("""UPDATE scheduled_transfers SET status=%s,provider=%s,responsible=%s,assigned_at=%s,
             started_at=%s,completed_at=%s,cancelled_at=%s,completion_note=%s,cancellation_reason=%s,
-            updated_at=%s,updated_by=%s WHERE id=%s RETURNING *""",
+            updated_at=%s,updated_by=%s,revision=revision+1 WHERE id=%s RETURNING *""",
             (target,change["provider"],responsible,assigned_at,started_at,completed_at,cancelled_at,completion_note,cancellation_reason,stamp,user["display_name"],item_id)).fetchone()
         record_transfer_event(database,item_id,"ESTADO",user["display_name"],change["previous_status"],target,change["note"])
         audit(database,"transfer",item_id,"CAMBIO_ESTADO",user["display_name"],f"{change['previous_status']} → {target}",actor_id=user["id"],before=current,after=item)
@@ -2134,18 +2380,20 @@ def transfer_status(item_id: int, request: Request, data: TransferStatusIn = Bod
 
 @app.patch("/api/transfers/{item_id}")
 def edit_transfer(item_id: int, request: Request, data: TransferEdit = Body(...)):
+    expected_revision=data.expected_revision
     data=validated_business_data(clean_transfer,data.model_dump());allow_duplicate=data.pop("allow_duplicate",False)
     user = authorized(request, "transfers.manage"); fields = ["task_number", "transfer_type", "scheduled_date", "scheduled_time", "origin", "destination", "provider", "responsible", "comments"]
     with connect() as database:
         current=database.execute("SELECT * FROM scheduled_transfers WHERE id=%s FOR UPDATE",(item_id,)).fetchone()
         if not current: raise HTTPException(404, "Registro inexistente")
+        if expected_revision != current["revision"]: raise HTTPException(409,"El programado cambió desde que lo abriste. Recargá el registro antes de guardar")
         if normalized_status(current["status"]) in {"FINALIZADO","CANCELADO"}:raise HTTPException(409,"Un traslado finalizado o cancelado ya no puede editarse")
         ensure_transfer_responsible(database,data.get("responsible"))
         if normalized_status(current["status"]) in {"ASIGNADO","EN_CURSO"} and (not data.get("provider") or not data.get("responsible")):
             raise HTTPException(400,"El traslado asignado requiere prestador y responsable")
         duplicate=transfer_duplicate(database,data,item_id)
         if duplicate and not allow_duplicate:raise HTTPException(409,{"message":"Ya existe un programado con la misma tarea, fecha, hora y recorrido","duplicate":transfer_duplicate_payload(duplicate)})
-        stamp=now();item = database.execute(f"UPDATE scheduled_transfers SET {','.join(field+'=%s' for field in fields)},updated_at=%s,updated_by=%s WHERE id=%s RETURNING *", [data.get(field) for field in fields] + [stamp,user["display_name"],item_id]).fetchone()
+        stamp=now();item = database.execute(f"UPDATE scheduled_transfers SET {','.join(field+'=%s' for field in fields)},updated_at=%s,updated_by=%s,revision=revision+1 WHERE id=%s RETURNING *", [data.get(field) for field in fields] + [stamp,user["display_name"],item_id]).fetchone()
         record_transfer_event(database,item_id,"EDITADO",user["display_name"],current["status"],current["status"],"Datos operativos actualizados")
         audit(database,"transfer",item_id,"EDITADO",user["display_name"],data.get("task_number", ""),actor_id=user["id"],before=current,after=item)
     return item
@@ -2155,3 +2403,11 @@ def edit_transfer(item_id: int, request: Request, data: TransferEdit = Body(...)
 def delete_transfer(item_id: int, request: Request):
     authorized(request, "transfers.manage")
     raise HTTPException(405,"Los programados se conservan. Utilice el estado Cancelado e indique el motivo")
+
+
+@app.get("/{client_path:path}", include_in_schema=False)
+def react_navigation(client_path: str):
+    # Keep unknown API endpoints and missing assets as real 404 responses.
+    if not client_path or client_path.startswith(("api/", "static/")) or client_path in {"api", "static", "health", "docs", "redoc", "openapi.json"} or "." in client_path.rsplit("/", 1)[-1]:
+        raise HTTPException(404, "No encontrado")
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})

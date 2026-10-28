@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import time
 from urllib.parse import unquote, urlparse
@@ -89,7 +90,7 @@ def parse_coordinates(value):
         match = re.search(pattern, text, re.I)
         if match:
             lat, lon = float(match.group(1)), float(match.group(2))
-            if -36.5 <= lat <= -29 and -59.5 <= lon <= -52:
+            if -55.5 <= lat <= 5.5 and -74.5 <= lon <= -34.5:
                 return lat, lon
     dms = re.search(r"(\d{1,2})[°º]\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)[\"″]?\s*([NS]).*?(\d{1,3})[°º]\s*(\d{1,2})['′]\s*(\d{1,2}(?:\.\d+)?)[\"″]?\s*([EW])", text, re.I)
     if dms:
@@ -99,11 +100,12 @@ def parse_coordinates(value):
             lat = -lat
         if dms.group(8).upper() == "W":
             lon = -lon
-        if -36.5 <= lat <= -29 and -59.5 <= lon <= -52:
+        if -55.5 <= lat <= 5.5 and -74.5 <= lon <= -34.5:
             return lat, lon
     if text.startswith(("http://", "https://")):
         host = (urlparse(text).hostname or "").lower()
-        if host.endswith(("google.com", "google.com.uy", "goo.gl", "maps.app.goo.gl")):
+        google_domains = ("google.com", "google.com.uy", "google.com.ar", "google.com.br")
+        if host in ("goo.gl", "maps.app.goo.gl") or any(host == domain or host.endswith("." + domain) for domain in google_domains):
             try:
                 response = urlopen(Request(text, headers={"User-Agent": "Mozilla/5.0"}), timeout=8)
                 final = response.geturl()
@@ -118,16 +120,38 @@ def parse_coordinates(value):
 def route_data(start, end):
     lat1, lon1 = start
     lat2, lon2 = end
-    url = f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson&alternatives=false&steps=false"
+    router = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
+    url = f"{router}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson&alternatives=false&steps=false"
     try:
         with urlopen(Request(url, headers={"User-Agent": "CentroOperativo/1.0"}), timeout=15) as response:
             data = json.loads(response.read())
+        if data.get("code") == "NoSegment":
+            raise ValueError("Ubicación en agua o sin vía cercana: el motor de rutas no pudo ajustar uno de los puntos. Revisá los pines.")
+        if data.get("code") == "NoRoute":
+            raise ValueError("El motor de rutas no encontró una ruta vial entre los puntos. Revisá origen y destino.")
         if data.get("code") != "Ok" or not data.get("routes"):
-            raise ValueError()
+            raise ValueError("El motor de rutas no devolvió un recorrido verificable.")
         route = data["routes"][0]
-        return {"km": round_distance(route["distance"] / 1000), "coordinates": route.get("geometry", {}).get("coordinates", [])}
+        return {"km": round_distance(route["distance"] / 1000), "coordinates": route.get("geometry", {}).get("coordinates", []), "waypoints": data.get("waypoints", [])}
+    except ValueError:
+        raise
     except Exception as exc:
-        raise ValueError("No se pudo calcular la ruta automáticamente. Verifique las ubicaciones o use la distancia manual.") from exc
+        raise ValueError("No se pudo consultar el motor de rutas. Verificá la conexión o usá la distancia manual.") from exc
+
+
+def nearest_road(point):
+    lat, lon = point
+    router = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org").rstrip("/")
+    url = f"{router}/nearest/v1/driving/{lon},{lat}?number=1"
+    try:
+        with urlopen(Request(url, headers={"User-Agent": "CentroOperativo/1.0"}), timeout=8) as response:
+            data = json.loads(response.read())
+        if data.get("code") != "Ok" or not data.get("waypoints"):
+            return None
+        waypoint = data["waypoints"][0]
+        return {"distance": float(waypoint["distance"]), "location": waypoint["location"]}
+    except Exception:
+        return None
 
 
 def route_km(start, end):

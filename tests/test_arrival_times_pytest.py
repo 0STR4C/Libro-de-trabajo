@@ -3,6 +3,7 @@
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 import json
@@ -75,6 +76,79 @@ def clean_arrival_rows(delay_client):
         database.execute('DELETE FROM arrival_times')
 
 
+def test_official_matrix_replaces_synthetic_rows_and_resolves_scope(delay_client):
+    client, server = delay_client
+    from tools.seed_arrival_times.official_matrix import apply_rows, build_rows
+    from tools.seed_arrival_times.seed_arrival_times import build_seed_rows, seed_postgres
+
+    plan = build_rows()
+    assert len(plan) == 96
+    assert len({row['source_key'] for row in plan}) == len(plan)
+    with server.connect() as database:
+        seed_postgres(database, build_seed_rows(), apply=True)
+        notices_before = database.execute('SELECT count(*) AS count FROM notices').fetchone()['count']
+        delays_before = database.execute('SELECT count(*) AS count FROM delay_zones').fetchone()['count']
+        assert apply_rows(database, plan) == {
+            'synthetic_removed': 40, 'official_inserted': 96, 'official_total': 96,
+        }
+    with server.connect() as database:
+        assert apply_rows(database, plan)['official_inserted'] == 0
+        assert database.execute('SELECT count(*) AS count FROM arrival_times WHERE seed_key IS NOT NULL').fetchone()['count'] == 0
+        assert database.execute('SELECT count(*) AS count FROM arrival_times WHERE is_active=TRUE').fetchone()['count'] == 96
+        assert database.execute("SELECT count(*) AS count FROM audit_events WHERE entity='arrival_time' AND source='official_matrix'").fetchone()['count'] == 96
+        assert database.execute('SELECT count(*) AS count FROM notices').fetchone()['count'] == notices_before
+        assert database.execute('SELECT count(*) AS count FROM delay_zones').fetchone()['count'] == delays_before
+
+    def resolve(service, department, zone):
+        status, payload = _request(client, '/api/arrival-times/resolve?' + urlencode({
+            'service': service, 'department': department, 'zone': zone,
+        }))
+        assert status == 200
+        return payload
+
+    assert resolve('ML', 'MONTEVIDEO', 'Centro')['minutes_max'] == 30
+    assert resolve('ML', 'MONTEVIDEO', 'Colón')['minutes_max'] == 45
+    assert resolve('GRÚA', 'MONTEVIDEO', 'Centro')['minutes_max'] == 45
+    assert resolve('SINIESTROS', 'MONTEVIDEO', 'Centro')['status'] == 'not_configured'
+    assert resolve('ML', 'CANELONES', 'Ciudad de la Costa')['minutes_max'] == 45
+    assert resolve('GRÚA', 'CANELONES', 'Atlántida')['minutes_max'] == 60
+    maldonado = resolve('ML', 'MALDONADO', 'Piriápolis')
+    assert (maldonado['indication_type'], maldonado['minutes_min'], maldonado['minutes_max']) == ('INTERVAL', 30, 45)
+    assert resolve('ML', 'MALDONADO', 'Todo el departamento')['indication_type'] == 'TO_CONFIRM'
+    assert resolve('SINIESTROS', 'SALTO', 'Salto')['indication_type'] == 'TO_CONFIRM'
+    assert resolve('ML', 'FLORES', 'Trinidad')['indication_type'] == 'TO_CONFIRM'
+
+
+def test_arrival_shape_rejects_missing_interval_bound(delay_client):
+    _, server = delay_client
+    with pytest.raises(Exception):
+        with server.connect() as database:
+            database.execute("""INSERT INTO arrival_times(service,department,zone,is_active,created_by,updated_by,created_at,updated_at,
+                indication_type,minutes_min,minutes_max) VALUES('ML','MONTEVIDEO','Pocitos',TRUE,'Test','Test',now(),now(),
+                'INTERVAL',NULL,45)""")
+
+
+def test_overview_lists_only_active_operational_references(delay_client):
+    client, server = delay_client
+    with server.connect() as database:
+        database.execute("""INSERT INTO arrival_times(service,department,zone,zone_members,indication_type,minutes_max,
+            is_active,created_by,updated_by,created_at,updated_at) VALUES
+            ('ML','COLONIA','Colonia del Sacramento, Juan Lacaze',ARRAY['Colonia del Sacramento','Juan Lacaze'],
+             'MAXIMUM',60,TRUE,'Test','Test',now(),now()),
+            ('GRÚA','MONTEVIDEO','Pocitos',ARRAY['Pocitos'],'MAXIMUM',45,FALSE,'Test','Test',now(),now())""")
+        database.execute("""INSERT INTO arrival_times(service,department,zone,zone_members,indication_type,minutes_max,
+            is_active,seed_key,created_by,updated_by,created_at,updated_at) VALUES
+            ('SINIESTROS','MONTEVIDEO','Buceo',ARRAY['Buceo'],'MAXIMUM',90,TRUE,'synthetic-overview',
+             'Test','Test',now(),now())""")
+    status, overview = _request(client, '/api/arrival-times/overview')
+    assert status == 200
+    assert len(overview['departments']) == 19
+    assert len(overview['departments']['COLONIA']) == 1
+    assert overview['departments']['COLONIA'][0]['zone_members'] == ['Colonia del Sacramento', 'Juan Lacaze']
+    assert overview['departments']['COLONIA'][0]['display_text'] == 'Máximo de 60 min'
+    assert overview['departments']['MONTEVIDEO'] == []
+
+
 def test_arrival_catalog_and_seed_are_valid_and_idempotent(delay_client):
     client, server = delay_client
     from app.geography import ALL_DEPARTMENT, URUGUAY_ZONES
@@ -98,6 +172,11 @@ def test_arrival_catalog_and_seed_are_valid_and_idempotent(delay_client):
                FROM arrival_times WHERE seed_key LIKE 'arrival-time-seed-v1-%'"""
         ).fetchone()
         assert counts == {"total": 40, "active": 35, "departments": 19}
+    example = rows[0]
+    status, lookup = _request(client, "/api/arrival-times/resolve?" + urlencode({
+        "service": example["service"], "department": example["department"], "zone": example["zone"],
+    }))
+    assert status == 200 and lookup["status"] == "not_configured"
 
 
 def test_arrival_times_api_pages_and_filters_in_postgres(delay_client):
@@ -131,6 +210,37 @@ def test_arrival_times_api_pages_and_filters_in_postgres(delay_client):
     status, _ = _request(client, "/api/arrival-times?limit=51")
     assert status == 422
     status, _ = _request(client, "/api/arrival-times?department=Atlantida")
+    assert status == 422
+
+
+def test_department_map_query_matches_resolve_and_excludes_inactive_or_seed(delay_client):
+    client, server = delay_client
+    configured = [
+        ("ML", "Todo el departamento", 60, True, None),
+        ("ML", "Pocitos", 40, True, None),
+        ("GRÚA", "Todo el departamento", 75, True, None),
+        ("SINIESTROS", "Todo el departamento", 90, False, None),
+        ("SINIESTROS", "Buceo", 100, True, "seed-sintetico"),
+    ]
+    with server.connect() as database:
+        database.cursor().executemany("""INSERT INTO arrival_times(service,department,zone,base_estimated_minutes,
+            is_active,seed_key,created_by,updated_by,created_at,updated_at)
+            VALUES(%s,'MONTEVIDEO',%s,%s,%s,%s,'Pytest','Pytest',now(),now())""", configured)
+    status, department = _request(client, "/api/arrival-times/department?department=montevideo")
+    assert status == 200
+    assert department["department"] == "MONTEVIDEO"
+    assert {(item["service"], item["zone"], item["base_estimated_minutes"])
+            for item in department["items"]} == {
+                ("ML", "Todo el departamento", 60), ("ML", "Pocitos", 40),
+                ("GRÚA", "Todo el departamento", 75),
+            }
+    status, exact = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and exact["base_estimated_minutes"] == 40
+    status, fallback = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Buceo")
+    assert status == 200 and fallback["base_estimated_minutes"] == 60
+    status, empty = _request(client, "/api/arrival-times/department?department=FLORES")
+    assert status == 200 and empty["items"] == []
+    status, _ = _request(client, "/api/arrival-times/department?department=inexistente")
     assert status == 422
 
 
@@ -199,6 +309,14 @@ def test_arrival_times_permissions_are_dynamic(delay_client):
     assert status == 200
     status, _ = _request(reader, "/api/arrival-times")
     assert status == 200
+    status, reference = _request(reader, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and reference["status"] == "not_configured"
+    status, department = _request(reader, "/api/arrival-times/department?department=MONTEVIDEO")
+    assert status == 200 and department["items"] == []
+    status, overview = _request(reader, "/api/arrival-times/overview")
+    assert status == 200 and len(overview["departments"]) == 19
+    status, geography = _request(reader, "/api/arrival-times/geography")
+    assert status == 200 and "Nuevo París" in geography["departments"]["MONTEVIDEO"]
     status, _ = _request(reader, "/api/arrival-times", "POST", {
         "service": "GRÚA", "department": "ROCHA", "zone": "Chuy",
         "base_estimated_minutes": 60, "is_active": True,
@@ -252,6 +370,48 @@ def test_department_wide_and_specific_zones_have_distinct_exact_keys(delay_clien
     assert status == 200 and matched["id"] == broad["id"]
     status, _ = _request(client, "/api/arrival-times/match?service=ML&department=MONTEVIDEO&zone=Zona%20inventada")
     assert status == 422
+
+
+def test_arrival_resolution_prefers_zone_then_active_department_fallback(delay_client):
+    client, server = delay_client
+    base = {"service": "ML", "department": "MONTEVIDEO", "base_estimated_minutes": 60,
+            "is_active": True}
+    status, broad = _request(client, "/api/arrival-times", "POST", {**base, "zone": "Todo el departamento"}, csrf=True)
+    assert status == 201, broad
+    status, specific = _request(client, "/api/arrival-times", "POST", {**base, "zone": "Pocitos", "base_estimated_minutes": 40}, csrf=True)
+    assert status == 201, specific
+    status, resolved = _request(client, "/api/arrival-times/resolve?service=ml&department=montevideo&zone=pocitos")
+    assert status == 200
+    assert resolved == {"status": "configured", "service": "ML", "department": "MONTEVIDEO",
+                        "requested_zone": "Pocitos", "base_estimated_minutes": 40,
+                        "indication_type": "TIME", "minutes_min": None, "minutes_max": None,
+                        "display_text": "40 min habituales", "unit": "minutes",
+                        "scope": "zone", "source_zone": "Pocitos", "source_zones": ["Pocitos"],
+                        "arrival_time_id": specific["id"],
+                        "revision": specific["revision"], "updated_at": specific["updated_at"]}
+    status, fallback = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Buceo")
+    assert status == 200 and fallback["base_estimated_minutes"] == 60
+    assert fallback["scope"] == "department" and fallback["source_zone"] == "Todo el departamento"
+    status, _ = _request(client, f"/api/arrival-times/{specific['id']}?expected_revision={specific['revision']}", "DELETE", csrf=True)
+    assert status == 204
+    status, fallback = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and fallback["arrival_time_id"] == broad["id"] and fallback["scope"] == "department"
+    status, _ = _request(client, f"/api/arrival-times/{broad['id']}?expected_revision={broad['revision']}", "DELETE", csrf=True)
+    assert status == 204
+    status, missing = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and missing == {"status": "not_configured", "service": "ML", "department": "MONTEVIDEO",
+                                          "requested_zone": "Pocitos", "base_estimated_minutes": None,
+                                          "indication_type": None, "minutes_min": None, "minutes_max": None,
+                                          "display_text": None, "unit": "minutes",
+                                          "scope": None, "source_zone": None, "source_zones": [], "arrival_time_id": None,
+                                          "revision": None, "updated_at": None}
+    status, _ = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Zona%20inventada")
+    assert status == 422
+    with server.connect() as database:
+        actions = [row["action"] for row in database.execute(
+            "SELECT action FROM audit_events WHERE entity='arrival_time' AND entity_id=%s ORDER BY id",
+            (specific["id"],)).fetchall()]
+    assert actions == ["CREADO", "DESACTIVADO"]
 
 
 def test_concurrent_duplicate_create_and_stale_edit(delay_client):
@@ -316,3 +476,114 @@ def test_deactivate_reactivate_filter_and_audit_history(delay_client):
             "SELECT action FROM audit_events WHERE entity='arrival_time' AND entity_id=%s ORDER BY id",
             (first["id"],)).fetchall()]
     assert actions == ["CREADO", "DESACTIVADO", "REACTIVADO"]
+
+
+def test_indication_types_groups_service_isolation_and_no_notices(delay_client):
+    client, server = delay_client
+    with server.connect() as database:
+        notices_before = database.execute("SELECT count(*) n FROM notices").fetchone()["n"]
+    entries = [
+        {"service": "ML", "department": "MONTEVIDEO", "zone": "Pocitos, Buceo",
+         "indication_type": "MAXIMUM", "minutes_max": 30},
+        {"service": "SINIESTROS", "department": "MONTEVIDEO", "zone": "Pocitos",
+         "indication_type": "INTERVAL", "minutes_min": 30, "minutes_max": 45},
+        {"service": "GRÚA", "department": "MONTEVIDEO", "zone": "Todo el departamento",
+         "indication_type": "TO_CONFIRM"},
+    ]
+    created = []
+    for payload in entries:
+        status, item = _request(client, "/api/arrival-times", "POST", payload, csrf=True)
+        assert status == 201, item
+        created.append(item)
+    assert created[0]["zone_members"] == ["Pocitos", "Buceo"]
+    assert created[0]["display_text"] == "Máximo de 30 min"
+    assert created[1]["display_text"] == "Entre 30 y 45 min"
+    assert created[2]["display_text"] == "A confirmar"
+    for service, zone, kind, scope, text in (
+        ("ML", "Pocitos", "MAXIMUM", "group", "Máximo de 30 min"),
+        ("ML", "Buceo", "MAXIMUM", "group", "Máximo de 30 min"),
+        ("SINIESTROS", "Pocitos", "INTERVAL", "zone", "Entre 30 y 45 min"),
+        ("GRÚA", "Buceo", "TO_CONFIRM", "department", "A confirmar"),
+    ):
+        status, result = _request(client, "/api/arrival-times/resolve?" + urlencode({
+            "service": service, "department": "MONTEVIDEO", "zone": zone,
+        }))
+        assert status == 200 and (result["indication_type"], result["scope"], result["display_text"]) == (kind, scope, text)
+        assert result["base_estimated_minutes"] is None
+    status, missing = _request(client, "/api/arrival-times/resolve?service=SINIESTROS&department=MONTEVIDEO&zone=Buceo")
+    assert status == 200 and missing["status"] == "not_configured"
+    status, department = _request(client, "/api/arrival-times/department?department=MONTEVIDEO")
+    assert status == 200 and len(department["items"]) == 3
+    assert {item["indication_type"] for item in department["items"]} == {"MAXIMUM", "INTERVAL", "TO_CONFIRM"}
+    status, broad = _request(client, "/api/arrival-times", "POST", {
+        "service": "ML", "department": "MONTEVIDEO", "zone": "Todo el departamento",
+        "indication_type": "MAXIMUM", "minutes_max": 45,
+    }, csrf=True)
+    assert status == 201, broad
+    status, preferred = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and preferred["scope"] == "group" and preferred["minutes_max"] == 30
+    status, overlapping = _request(client, "/api/arrival-times", "POST", {
+        "service": "ML", "department": "MONTEVIDEO", "zone": "Buceo, Malvín",
+        "indication_type": "MAXIMUM", "minutes_max": 45,
+    }, csrf=True)
+    assert status == 409, overlapping
+    status, other_service = _request(client, "/api/arrival-times", "POST", {
+        "service": "GRÚA", "department": "MONTEVIDEO", "zone": "Pocitos",
+        "indication_type": "MAXIMUM", "minutes_max": 60,
+    }, csrf=True)
+    assert status == 201, other_service
+    status, _ = _request(client, f"/api/arrival-times/{created[0]['id']}?expected_revision={created[0]['revision']}", "DELETE", csrf=True)
+    assert status == 204
+    status, after = _request(client, "/api/arrival-times/resolve?service=ML&department=MONTEVIDEO&zone=Pocitos")
+    assert status == 200 and after["scope"] == "department" and after["minutes_max"] == 45
+    with server.connect() as database:
+        assert database.execute("SELECT count(*) n FROM notices").fetchone()["n"] == notices_before
+
+
+@pytest.mark.parametrize("patch", [
+    {"indication_type": "MAXIMUM", "minutes_max": None},
+    {"indication_type": "MAXIMUM", "minutes_max": 30, "base_estimated_minutes": 30},
+    {"indication_type": "INTERVAL", "minutes_min": 45, "minutes_max": 30},
+    {"indication_type": "INTERVAL", "minutes_min": 30},
+    {"indication_type": "TO_CONFIRM", "minutes_max": 45},
+    {"indication_type": "UNKNOWN", "base_estimated_minutes": 30},
+    {"indication_type": "TIME", "base_estimated_minutes": None},
+    {"indication_type": "INTERVAL", "minutes_min": "30", "minutes_max": 45},
+])
+def test_arrival_indication_shape_rejects_invalid_values(delay_client, patch):
+    client, _ = delay_client
+    payload = {"service": "ML", "department": "MONTEVIDEO", "zone": "Pocitos", **patch}
+    status, _ = _request(client, "/api/arrival-times", "POST", payload, csrf=True)
+    assert status == 422
+
+
+def test_concurrent_group_overlaps_cannot_both_be_published(delay_client):
+    first, _ = delay_client
+    second = _second_admin_client()
+    barrier = Barrier(2)
+
+    def create(client, zone):
+        barrier.wait(timeout=5)
+        return _request(client, "/api/arrival-times", "POST", {
+            "service": "ML", "department": "MONTEVIDEO", "zone": zone,
+            "indication_type": "MAXIMUM", "minutes_max": 45,
+        }, csrf=True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(create, first, "Pocitos, Buceo")
+        b = pool.submit(create, second, "Buceo, Malvín")
+        outcomes = [a.result(timeout=10), b.result(timeout=10)]
+    assert sorted(status for status, _ in outcomes) == [201, 409]
+
+
+def test_schema_reinitialization_preserves_group_and_indication(delay_client):
+    client, server = delay_client
+    status, created = _request(client, "/api/arrival-times", "POST", {
+        "service": "ML", "department": "CANELONES", "zone": "Neptunia, Pinamar",
+        "indication_type": "INTERVAL", "minutes_min": 30, "minutes_max": 45,
+    }, csrf=True)
+    assert status == 201, created
+    server.initialize()
+    status, resolved = _request(client, "/api/arrival-times/resolve?service=ML&department=CANELONES&zone=Pinamar")
+    assert status == 200 and resolved["arrival_time_id"] == created["id"]
+    assert resolved["scope"] == "group" and resolved["display_text"] == "Entre 30 y 45 min"

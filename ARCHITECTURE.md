@@ -1,5 +1,12 @@
 # Arquitectura técnica
 
+El catálogo único de rutas React, títulos y permisos está en `frontend/routes.js`.
+`frontend/app-shell.jsx` sincroniza la sección y filtros no sensibles con History
+API. Ambos adaptadores HTTP entregan `index.html` para rutas de interfaz sin
+extensión, preservando los 404 de API y recursos estáticos. El proxy de producción
+reenvía la ruta original al servicio de aplicación; véase
+[`docs/NAVEGACION_URL.md`](docs/NAVEGACION_URL.md).
+
 ## Ejecución
 
 Centro Operativo ofrece dos adaptadores HTTP. `app/local_server.py` usa SQLite
@@ -76,17 +83,84 @@ utilidades también alcanzan los portales montados en `document.body`.
 El Dockerfile compila estos recursos en una etapa Node y copia
 solo su salida a la imagen Python final. El archivo histórico no forma parte de la imagen ni de los recursos públicos.
 
-Solo Avisos, Zonas con demora, Auditoría histórica de demoras y Auditoría
+Avisos, Zonas con demora, Tiempos estándar de llegada en Configuración, Auditoría histórica de demoras y Auditoría
 general usan páginas PostgreSQL de 50 filas. Sus respuestas incluyen `items`,
 `total`, `limit` y `offset`. Horarios devuelve la lista completa del rango
 seleccionado: fusiona proyecciones WFM, revisiones publicadas anteriores a la
 proyección y registros históricos. Planificación WFM, solicitudes, Programados,
-Cotizador y los listados de Configuración no se paginan. Los cambios de pestaña
+Cotizador y los demás listados de Configuración no se paginan. Los cambios de pestaña
 y día muestran inmediatamente la selección y un estado de carga React mientras
 se obtiene el contenido.
 
+### Contrato de carga y actualización de las vistas
+
+`frontend/app-shell.jsx` conserva montadas las vistas ya visitadas. Cada carga
+inicial o recarga tiene un número de secuencia por vista: una respuesta anterior
+no reemplaza a la última. El cierre o cambio de sesión invalida la generación,
+aborta las solicitudes pendientes del shell y descarta sus respuestas, errores y
+actualizaciones visuales. Las vistas que cargan páginas por su cuenta mantienen
+también una secuencia local para descartar respuestas de filtros anteriores.
+
+| Vista | Fuente y filtro principal | Actualización |
+| --- | --- | --- |
+| Resumen | Estadísticas de demoras, GeoJSON y consulta de tiempo estándar por prestación y zona | Al entrar, al volver a visibilidad, periódicamente y tras cambios de demoras o tiempos estándar |
+| Avisos | `/api/notices/page`, filtros y página en el componente | Tras guardar y al cambiar filtros o página; secuencia local |
+| Cotizador | Tarifas, cálculo e historial dentro del componente | Al calcular o recuperar una cotización; conserva el borrador local |
+| Zonas con demora | `/api/delays` y catálogo geográfico; filtros y página | Tras guardar, al aplicar filtros y con actualización de la vista activa |
+| Programados | `/api/transfers` con filtros | Tras sus operaciones y al aplicar filtros |
+| Horarios | `/api/schedules`, personas y solicitudes | Al cambiar semana/filtros o solicitudes WFM |
+| Configuración → Tiempos estándar de llegada | `/api/arrival-times` y catálogo, página de 50 | Tras guardar, filtros y paginación; Resumen consulta `/api/arrival-times/department` |
+| Supervisión y auditorías | Indicadores o páginas filtradas de sus entidades | Al entrar o al volver tras una mutación relacionada |
+| Configuración y WFM | Consultas específicas de la pestaña, plan y solicitudes | Tras guardar o cambiar pestaña, día o equipo |
+
+Las mutaciones exitosas emiten `libro:operational-change` con la ruta de la
+entidad. El shell marca únicamente las vistas dependientes para refrescarlas al
+volver; si Resumen está visible, lo actualiza sin recargar toda la aplicación.
+El módulo donde se efectuó la escritura conserva su propio flujo de refresco y
+su formulario. Una falla de lectura muestra un error y permite reintentar. Si
+la red se corta durante una escritura, el resultado queda **sin confirmar**:
+no se repite automáticamente; se consulta el estado actual antes de reintentar.
+Todas las solicitudes del shell tienen un límite de 30 segundos en el navegador.
+Al vencer, una lectura informa que no terminó y permite reintentar. Una
+escritura informa que el resultado es **sin confirmar**: abortar la espera del
+navegador no garantiza que PostgreSQL haya cancelado la transacción. La
+cancelación al cambiar de sesión tampoco confirma que el servidor canceló
+una escritura.
+
+Avisos, Programados, Tiempos de arribo y Demoras usan revisiones para las
+ediciones operativas. El formulario envía la revisión que abrió; PostgreSQL
+bloquea la fila y acepta la primera transacción sobre esa revisión. La siguiente
+recibe HTTP `409`, conserva su borrador y debe revisar la versión vigente antes
+de guardar. Las altas de Avisos, Programados y Demoras conservan sus controles
+de duplicados; una alta de otro registro no compite por una revisión existente.
+Usuarios, roles/permisos, tarifas, peajes, acceso Google, reglas WFM y
+requerimientos semanales aplican el mismo control al editar: un `409` exige
+recargar los valores actuales antes de volver a guardar.
+
+En Resumen, mapa y tiempos estándar tienen estados de carga y fallo independientes.
+Se conserva la última lectura válida con su hora, y una falla nunca se traduce en
+«sin demoras» ni en un tiempo de arribo confirmado. Los vencimientos del mapa
+se recalculan al alcanzar `review_due_at` sin cerrar la consulta del departamento
+ni perder la zona seleccionada. La próxima respuesta del servidor retira
+las demoras normalizadas. Resumen no consulta `/api/operational-alerts`.
+El intervalo de actualización actual del Resumen es de 60 segundos mientras la
+pestaña está visible. Si otras vistas necesitan actualización periódica se
+decidirá según su uso; no se presupone un intervalo nuevo en el código.
+
+Para coordinar cambios por módulo, `frontend/app-shell.jsx` es el contrato
+compartido de sesión, navegación, carga e invalidación; `frontend/dashboard.jsx`
+y `frontend/delay-map-state.js` pertenecen al Resumen; `app/delay_map_stats.py`
+y el endpoint de mapa de `app/postgres_server.py` definen el payload
+operativo. Integrar primero el contrato del shell, después el payload del
+backend y por último la vista y sus pruebas. Si otro módulo necesita cambiar
+un archivo compartido, coordinar su interfaz antes de editarlo. Programados,
+Horarios, WFM, Cotizador y Configuración mantienen sus responsables de vista
+en sus respectivos archivos `frontend/*.jsx`; no se redefinen sus reglas de
+negocio desde Resumen.
+
 El shell React separa navegación operativa de Supervisión. Resumen presenta el
-mapa de demoras y alertas; las métricas están en Dashboard de Supervisión.
+mapa de demoras y un panel fijo de consulta por zona y prestación; las métricas
+están en Dashboard de Supervisión.
 Auditoría de demoras permite consultar el alta, la normalización, sus autores
 y el registro de eventos históricos. El Cotizador ordena explícitamente base
 de salida, origen y destino, y agrupa kilómetros e importes en el resultado.
@@ -113,8 +187,41 @@ o migrada debe cumplir la directiva canónica de [`CLAUDE.md`](CLAUDE.md):
 El desarrollo frontend es exclusivamente React/JSX, PrimeReact y Tailwind.
 La existencia de archivos históricos no autoriza reutilizarlos ni agregar
 parches de layout a `styles.css`, otras hojas globales o `app.js`.
-Resolver el estilo del componente en JSX con utilidades y propiedades nativas
-o Pass Through (`pt`) de PrimeReact, conservando los contratos HTTP.
+Resolver la composición propia de cada vista en JSX con utilidades y propiedades
+nativas o Pass Through (`pt`) de PrimeReact, conservando los contratos HTTP. La
+escala transversal del runtime React se mantiene en `frontend/visual-system.css`,
+importado por `frontend/main.jsx`: sus tokens y reglas cubren superficies,
+controles, tablas, diálogos y paneles portados a `document.body`. No agregar
+parches nuevos a las hojas históricas de `app/static/` para estos componentes.
+
+### Sistema visual operativo
+
+`frontend/main.jsx` configura PrimeReact de forma compartida; `frontend/dense-table.jsx`
+conserva la tabla paginada densa. `frontend/app-shell.jsx` aporta el encabezado,
+la navegación y `data-view`, que permite adaptar la composición sin introducir
+estilos arbitrarios en cada pantalla. La escala común es 22 px para el título,
+16 px para secciones, 14 px para tarjetas y texto corriente, 13 px para datos y
+controles, 12 px para etiquetas y metadatos; controles de 36 px, separación de
+12/8 px y tarjetas de 12–16 px. Las filas de tabla empiezan en 36 px y crecen
+con el contenido. Menús largos usan un máximo de 264 px, sin altura obligatoria.
+
+| Área | Prioridad de lectura y composición |
+| --- | --- |
+| Resumen | Mapa junto a la indicación comunicable para GRÚA, ML y SINIESTROS; el detalle queda bajo demanda. |
+| Avisos | Tabla y acción de alta, filtros compactos, detalle completo en diálogo. |
+| Zonas con demora | Prestación, ubicación, vigencia e instrucción comunicable. |
+| Programados | Fecha/hora, tarea, estado, prestador y responsable. |
+| Cotizador | Datos de entrada y resultado juntos; precio y desglose visibles. |
+| Horarios | Matriz semanal de Equipo y tarjetas propias para Mis horarios. |
+| WFM | Navegación y publicación estratégicas sin cambiar reglas de planificación. |
+| Configuración | Formularios y catálogos, incluidos tiempos estándar. |
+| Auditorías | Filtros, fecha, actor y cambios en tablas consultables. |
+
+El ejecutor `tools/browser_interaction/run.cjs` monta el bundle React real con
+respuestas sintéticas; valida el marco visual a 1920, 1536 y 1280 px, el tema
+oscuro, ampliación de la vista, tamaño de menú y flujos de interacción. Las
+capturas opcionales se habilitan mediante `VISUAL_OUTPUT`; no sustituyen una
+revisión manual de cada dato y permiso en un entorno de pruebas.
 
 Telefonistas requieren alta densidad, lectura rápida sin scroll horizontal y
 acciones directas. Planificadores necesitan visión estratégica y grillas
@@ -226,6 +333,11 @@ init y no-new-privileges para app, 60 s de margen inicial de salud y espera de
 arranque de 240 s. El empaquetador verifica su presencia antes de generar el ZIP.
 Las plantillas no sustituyen el `.env` ni el nombre de proyecto del servidor.
 Procedimiento y comprobación de puertos en `tools/deployment/README.md`.
+El ZIP identifica la revisión de referencia y el contenido efectivo mediante
+hashes; se detiene si falta inventariar un módulo nuevo de `app/` o `frontend/`.
+La validación de Compose contempla también el worker opcional. Las pruebas
+PostgreSQL usan proyectos temporales independientes, aptos para ejecuciones
+simultáneas sin detener la base manual de pruebas.
 
 Revisar cambios existentes antes de editar. Frontend: únicamente Vite y sintaxis
 JS/JSX en Docker; comandos en `tools/frontend_build/README.md`. Backend: pruebas

@@ -1,34 +1,44 @@
 [CmdletBinding()]
-param([string]$ImageName = 'librodetrabajo-app:latest')
+param(
+    [string]$ImageName = 'librodetrabajo-app:latest',
+    [string[]]$TestCommand = @()
+)
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
 $toolDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $composeFile = Join-Path $toolDirectory "compose.yaml"
-$projectName = "librodetrabajo-tests"
-$suiteDatabase = "suite_" + ([guid]::NewGuid().ToString("N"))
-$suiteUrl = "postgresql://test_runner:test_only_password@test-db:5432/$suiteDatabase"
+$projectName = 'librodetrabajo-suite-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$previousImage = [Environment]::GetEnvironmentVariable('TEST_APP_IMAGE', 'Process')
+$previousPublish = [Environment]::GetEnvironmentVariable('TEST_DB_PUBLISH', 'Process')
+$failure = $null
 
 try {
     $env:TEST_APP_IMAGE = $ImageName
+    # Docker elige un puerto libre; esta ejecución no toca la base manual compartida.
+    $env:TEST_DB_PUBLISH = '127.0.0.1::5432'
     docker compose -p $projectName -f $composeFile up -d --wait test-db
-    if ($LASTEXITCODE -ne 0) { throw "La base PostgreSQL temporal no inició correctamente." }
+    if ($LASTEXITCODE -ne 0) { throw 'La base PostgreSQL aislada no inició.' }
 
-    docker compose -p $projectName -f $composeFile exec -T test-db createdb -U test_runner $suiteDatabase
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo crear la base aislada de esta ejecución." }
-
-    docker compose -p $projectName -f $composeFile run --rm `
-        -e "SECURITY_TEST_DATABASE_URL=$suiteUrl" `
-        tests
-    if ($LASTEXITCODE -ne 0) { throw "La suite PostgreSQL informó fallos." }
+    $runArguments = @('compose', '-p', $projectName, '-f', $composeFile,
+        'run', '--rm', '-e', 'DATABASE_URL=postgresql://test_runner:test_only_password@test-db:5432/test_operativa', 'tests')
+    $runArguments += $TestCommand
+    docker @runArguments
+    if ($LASTEXITCODE -ne 0) { throw 'La suite PostgreSQL informó fallos.' }
 }
+catch { $failure = $_ }
 finally {
     try {
-        docker compose -p $projectName -f $composeFile exec -T test-db `
-            dropdb -U test_runner --if-exists $suiteDatabase
+        # El nombre generado limita esta limpieza a los recursos de esta corrida.
+        docker compose -p $projectName -f $composeFile down --volumes --remove-orphans
+        if ($LASTEXITCODE -ne 0) { throw 'Falló la limpieza del proyecto aislado.' }
     }
-    finally {
-        docker compose -p $projectName -f $composeFile stop test-db
-        Remove-Item Env:TEST_APP_IMAGE -ErrorAction SilentlyContinue
+    catch {
+        if ($null -eq $failure) { $failure = $_ }
+        else { Write-Warning "La limpieza también falló: $($_.Exception.Message)" }
     }
+    [Environment]::SetEnvironmentVariable('TEST_APP_IMAGE', $previousImage, 'Process')
+    [Environment]::SetEnvironmentVariable('TEST_DB_PUBLISH', $previousPublish, 'Process')
 }
+if ($null -ne $failure) { throw $failure }
+Write-Host "PostgreSQL aislado: OK ($projectName)"

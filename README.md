@@ -1,5 +1,8 @@
 # Libro de Trabajo · Centro Operativo
 
+Cada sección tiene una dirección que puede guardarse y abrirse directamente.
+Las rutas y los filtros recuperables se describen en [Navegación por URL](docs/NAVEGACION_URL.md).
+
 La aplicación utiliza un libro azul/turquesa como identidad. Para abrirla desde
 esta carpeta, usar **Libro de Trabajo.lnk** o
 `tools/desktop_launcher/dist-libro/LibroDeTrabajo.exe`, con icono integrado.
@@ -23,10 +26,10 @@ Aplicación web desarrollada a partir del flujo observado en **Libro de trabajo 
 El shell React distingue Operación y Supervisión. Resumen muestra el mapa de
 demoras vigentes y alertas operativas; el Dashboard de Supervisión concentra
 métricas y la Auditoría de demoras consulta altas, retiros, responsables y
-eventos históricos. Solo Avisos, Zonas con demora, Auditoría histórica de
+eventos históricos. Avisos, Zonas con demora, Tiempos estándar de llegada en Configuración, Auditoría histórica de
 demoras y Auditoría general obtienen páginas de 50 filas desde PostgreSQL.
 Horarios, Planificación, solicitudes WFM, Programados, Cotizador y Configuración
-muestran la lista completa de su rango o filtro seleccionado.
+muestran la lista completa de su rango o filtro seleccionado, salvo los tiempos estándar paginados de Configuración.
 
 ## Módulos incluidos
 
@@ -122,10 +125,11 @@ equipo pasa a ser la fuente vigente sin borrar el registro anterior.
 Pendientes: intercambio directo de turnos entre agentes y reglas de cupo/saldo
 de licencia.
 
-Validación completa sin datos reales: `& .\tools\test_all\run.ps1`. El comando
-incluye la suite general, JavaScript, la prueba UI cuando Playwright está
-disponible y la suite PostgreSQL aislada obligatoria.
-`node tools/wfm_offline_build/ui_smoke.cjs` (ver requisitos en esa carpeta).
+Validación técnica sin datos reales: `& .\tools\test_all\run.ps1`. Ejecuta las
+pruebas vigentes, sintaxis JavaScript y Vite en Docker, más integración PostgreSQL
+en un proyecto aislado por ejecución. Informa explícitamente la cobertura de
+navegador React que aún no existe; los scripts visuales de `legacy_archive` son
+históricos. Véase `tools/test_all/README.md`.
 
 ### Módulos operativos
 
@@ -153,7 +157,7 @@ se deben inventar posiciones de cobro.
 - Zonas con demora y normalización.
 - Traslados programados por fecha, hora, origen, destino y prestador.
 - Horarios del equipo en grilla semanal e historial por persona, rol y período, con control de superposiciones y copia de semanas.
-- Tiempos estándar de arribo consultables.
+- Tiempos estándar de llegada administrados en Configuración y consultables desde el mapa de Resumen. Su [contrato y precedencia geográfica](docs/arrival-times.md) están documentados por separado.
 - Panel con indicadores operativos.
 - Cotizador de servicios por distancia, con salida opcional del móvil, reglas tarifarias configurables e historial.
 - Registro de auditoría de altas, ediciones y cambios de estado.
@@ -273,7 +277,7 @@ canónicas de IA son [AGENTS.md](AGENTS.md) y [CLAUDE.md](CLAUDE.md), idénticas
 El frontend usa React, PrimeReact y Tailwind con Vite. Las diez vistas y el
 shell activo están en `frontend/`; `app/static/index.html` solo monta la raíz
 React. `app/static/app.js` ya no se carga en la aplicación y se conserva como
-referencia histórica. Avisos, Zonas con demora y las dos auditorías usan
+referencia histórica. Avisos, Zonas con demora, Tiempos estándar de llegada en Configuración y las dos auditorías usan
 paginación real de 50 registros por solicitud; las vistas de planificación y
 configuración conservan la lista completa del rango o filtro seleccionado.
 

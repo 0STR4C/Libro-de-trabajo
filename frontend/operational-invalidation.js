@@ -4,6 +4,6 @@ export function affectedViews(url) {
   if (/^\/api\/delays(?:\/|$)/.test(path)) return ['dashboard', 'delayAudit', 'supervision'];
   if (/^\/api\/(?:notices|transfers)(?:\/|$)/.test(path)) return ['supervision'];
   if (/^\/api\/arrival-times(?:\/|$)/.test(path)) return ['dashboard', 'supervision'];
-  if (/^\/api\/(?:wfm|schedules)(?:\/|$)/.test(path)) return ['schedules', 'supervision'];
+  if (/^\/api\/(?:wfm|schedules)(?:\/|$)/.test(path)) return ['schedules', 'requests', 'supervision'];
   return [];
 }

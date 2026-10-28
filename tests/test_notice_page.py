@@ -15,7 +15,7 @@ class NoticePageTests(unittest.TestCase):
             database.execute("""CREATE TEMP TABLE notices (
                 id BIGINT, task_number TEXT, phone TEXT, notice_type TEXT, detail TEXT,
                 managed_by TEXT, communicated_by TEXT, comments TEXT, status TEXT,
-                created_at TIMESTAMPTZ)""")
+                created_at TIMESTAMPTZ, source_delay_id BIGINT, administratively_retired_at TIMESTAMPTZ)""")
             database.execute("""INSERT INTO notices
                 SELECT n, 'T' || n, '099', 'Otro', 'Detalle', NULL, 'Agente', NULL,
                        'PENDIENTE', '2026-01-01'::timestamptz + n * interval '1 minute'

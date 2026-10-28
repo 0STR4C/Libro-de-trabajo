@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import unittest
 from contextlib import closing
+from http.client import RemoteDisconnected
 from http.cookiejar import CookieJar
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -252,8 +253,8 @@ class QuoteApiTests(unittest.TestCase):
         self.assertEqual(result["toll_count"], 2)
         self.assertEqual(result["toll_price"], 1000)
         self.assertEqual([item["segment"] for item in result["toll_details"]], [
-            "Salida de la grúa → origen del cliente",
             "Traslado: origen → destino",
+            "Salida de la grúa → origen del cliente",
         ])
 
     def test_automatic_route_failure_is_a_recoverable_manual_contingency(self):
@@ -272,6 +273,78 @@ class QuoteApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("distancia manual", error["detail"])
         self.assertEqual(len(self.request("/api/quotes", authenticated=True)), before)
+
+    def test_uruguayan_segments_are_summed_without_changing_rates(self):
+        routes = [
+            {"km": 12.5, "coordinates": [[-56.17, -34.90], [-56.16, -34.89]]},
+            {"km": 8.25, "coordinates": [[-56.15, -34.88], [-56.17, -34.90]]},
+        ]
+        with patch.object(local_server, "route_data", side_effect=routes):
+            quote = self.request("/api/quotes/calculate", "POST", {
+                "origin": "-34.9000, -56.1700", "destination": "-34.8900, -56.1600",
+                "mobile_origin": "-34.8800, -56.1500", "include_mobile": True,
+            }, authenticated=True)
+        self.assertEqual(quote["trip_km"], 12.5)
+        self.assertEqual(quote["mobile_km"], 8.25)
+        self.assertEqual(quote["total_km"], 20.75)
+        self.assertEqual([segment["label"] for segment in quote["route_segments"]], [
+            "Traslado: origen → destino", "Salida de la grúa → origen del cliente",
+        ])
+
+    def test_regional_endpoint_and_cross_border_route_do_not_create_price(self):
+        before = len(self.request("/api/quotes", authenticated=True))
+        with patch.object(local_server, "route_data") as routing:
+            status, error = self.request_error("/api/quotes/calculate", "POST", {
+                "origin": "-34.6037, -58.3816", "destination": "-34.9011, -56.1645",
+            }, authenticated=True)
+            routing.assert_not_called()
+        self.assertEqual(status, 400)
+        self.assertIn("tarifa regional", error["detail"])
+        with patch.object(local_server, "route_data", return_value={"km": 10, "coordinates": [[-56.1645, -34.9011], [-58.3816, -34.6037], [-56.1645, -34.9011]]}):
+            status, error = self.request_error("/api/quotes/calculate", "POST", {
+                "origin": "-34.9011, -56.1645", "destination": "-34.9011, -56.1645",
+            }, authenticated=True)
+        self.assertEqual(status, 400)
+        self.assertIn("tarifa regional", error["detail"])
+        self.assertEqual(len(self.request("/api/quotes", authenticated=True)), before)
+
+    def test_capture_point_is_rejected_before_osrm_route_and_not_saved(self):
+        before = len(self.request("/api/quotes", authenticated=True))
+        road = {"distance": 3474.786778, "location": [-58.356012, -33.957245]}
+        with patch.object(local_server, "nearest_road", return_value=road), patch.object(local_server, "route_data") as routing:
+            status, error = self.request_error("/api/quotes/calculate", "POST", {
+                "origin": "-34.813803, -55.238921", "destination": "-33.979809, -58.382095", "include_mobile": False,
+            }, authenticated=True)
+            routing.assert_not_called()
+        self.assertEqual(status, 400)
+        self.assertIn("Destino: ubicación en agua o sin vía cercana", error["detail"])
+        self.assertEqual(len(self.request("/api/quotes", authenticated=True)), before)
+
+    def test_manual_quote_with_known_brazilian_point_is_rejected(self):
+        status, error = self.request_error("/api/quotes/calculate", "POST", {
+            "manual_distance": True, "manual_trip_km": 20,
+            "manual_region_points": ["-23.5505, -46.6333"],
+        }, authenticated=True)
+        self.assertEqual(status, 400)
+        self.assertIn("tarifa regional", error["detail"])
+
+    def test_geocoding_returns_distinct_synthetic_suggestions_without_external_calls(self):
+        suggestions = [
+            {"label": "San Martín 100, Buenos Aires, Buenos Aires, Argentina", "latitude": -34.6, "longitude": -58.4, "country_code": "AR"},
+            {"label": "San Martín 100, Rosario, Santa Fe, Argentina", "latitude": -32.9, "longitude": -60.7, "country_code": "AR"},
+        ]
+        with patch.object(local_server, "search_address", return_value=suggestions) as geocode:
+            result = self.request("/api/quotes/geocode?q=San%20Mart%C3%ADn%20100", authenticated=True)
+        geocode.assert_called_once_with("San Martín 100", None)
+        self.assertEqual(result, suggestions)
+
+    def test_country_filter_and_coordinate_preview_require_quotes_permission(self):
+        with patch.object(local_server, "search_address", return_value=[]) as geocode:
+            self.assertEqual(self.request("/api/quotes/geocode?q=18%20de%20Julio%20y%20Ejido&country=UY", authenticated=True), [])
+        geocode.assert_called_once_with("18 de Julio y Ejido", "UY")
+        point = self.request("/api/quotes/resolve-location?q=-33.979809%2C%20-58.382095", authenticated=True)
+        self.assertEqual((point["latitude"], point["longitude"]), (-33.979809, -58.382095))
+        self.assertFalse(point["inside_uruguay"])
 
     def test_manual_tolls_use_configured_unit_price(self):
         result = self.request(
@@ -328,13 +401,64 @@ class QuoteApiTests(unittest.TestCase):
         self.assertEqual(history[0]["created_by"], "Administrador")
         self.assertIn("pricing_snapshot", history[0])
 
-    def test_quote_history_supports_pagination_and_filters(self):
-        page = self.request("/api/quotes/history?limit=1&offset=0&mode=manual", authenticated=True)
-        self.assertEqual(page["limit"], 1)
-        self.assertEqual(page["offset"], 0)
-        self.assertGreaterEqual(page["total"], 1)
-        self.assertEqual(len(page["items"]), 1)
-        self.assertEqual(page["items"][0]["origin_input"], "Cotización manual")
+    def test_quote_history_returns_complete_filtered_list(self):
+        history = self.request("/api/quotes/history?mode=manual", authenticated=True)
+        self.assertIsInstance(history, list)
+        self.assertGreaterEqual(len(history), 1)
+        self.assertTrue(all(row["origin_input"] == "Cotización manual" for row in history))
+
+    def test_historical_price_is_unchanged_after_rule_update(self):
+        payload = {"manual_distance": True, "manual_trip_km": 27, "uninsured": False}
+        first = self.request("/api/quotes/calculate", "POST", payload, authenticated=True)
+        with local_server.connect() as database:
+            original = database.execute("SELECT insured_base FROM quote_rules WHERE id=1").fetchone()[0]
+        try:
+            with local_server.connect() as database:
+                database.execute("UPDATE quote_rules SET insured_base=? WHERE id=1", (original + 100,))
+            historical = next(row for row in self.request("/api/quotes/history", authenticated=True) if row["id"] == first["id"])
+            self.assertEqual(historical["total_price"], first["total_price"])
+            self.assertEqual(json.loads(historical["pricing_snapshot"])["base_price"], first["base_price"])
+            second = self.request("/api/quotes/calculate", "POST", payload, authenticated=True)
+            self.assertNotEqual(second["id"], first["id"])
+            self.assertEqual(second["total_price"], first["total_price"] + 100)
+        finally:
+            with local_server.connect() as database:
+                database.execute("UPDATE quote_rules SET insured_base=? WHERE id=1", (original,))
+
+    def test_lost_response_after_save_does_not_trigger_another_write(self):
+        with local_server.connect() as database:
+            before = database.execute("SELECT COUNT(*) FROM quotes").fetchone()[0]
+        with patch.object(self.server, "handle_error"), patch.object(local_server.Handler, "send_json", side_effect=ConnectionAbortedError("respuesta perdida")):
+            with self.assertRaises(RemoteDisconnected):
+                self.request(
+                    "/api/quotes/calculate", "POST",
+                    {"manual_distance": True, "manual_trip_km": 11, "task_number": "respuesta-perdida-sintética"},
+                    authenticated=True,
+                )
+        with local_server.connect() as database:
+            saved = database.execute("SELECT COUNT(*) FROM quotes WHERE task_number=?", ("respuesta-perdida-sintética",)).fetchone()[0]
+            after = database.execute("SELECT COUNT(*) FROM quotes").fetchone()[0]
+        self.assertEqual(saved, 1)
+        self.assertEqual(after, before + 1)
+
+    def test_catalog_change_preserves_historical_toll_passes(self):
+        with local_server.connect() as database:
+            toll_id = database.execute(
+                "INSERT INTO toll_catalog(name,latitude,longitude,price,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                ("Peaje histórico sintético", -33.8, -56.2, 123, 1, local_server.now(), local_server.now()),
+            ).lastrowid
+        payload = {"origin": "-33.8, -56.21", "destination": "-33.8, -56.19"}
+        route = {"km": 10, "coordinates": [[-56.21, -33.8], [-56.19, -33.8]]}
+        with patch.object(local_server, "route_data", return_value=route):
+            first = self.request("/api/quotes/calculate", "POST", payload, authenticated=True)
+            with local_server.connect() as database:
+                database.execute("UPDATE toll_catalog SET price=321 WHERE id=?", (toll_id,))
+            second = self.request("/api/quotes/calculate", "POST", payload, authenticated=True)
+        historical = next(row for row in self.request("/api/quotes/history", authenticated=True) if row["id"] == first["id"])
+        self.assertEqual(first["toll_price"], 123)
+        self.assertEqual(second["toll_price"], 321)
+        self.assertEqual(historical["toll_price"], 123)
+        self.assertEqual(json.loads(historical["toll_details"])[0]["price"], 123)
 
     def test_user_coordinate_formats_are_supported(self):
         full_link = "https://www.google.com/maps/place/34%C2%B051'50.7%22S+55%C2%B007'31.0%22W/@-34.8640815,-55.1278455,17z/data=!3m1!4b1!4m4!3m3!8m2!3d-34.8640859!4d-55.1252706"
@@ -562,7 +686,7 @@ class QuoteApiTests(unittest.TestCase):
             authenticated=True,
         )
         with local_server.connect() as database:
-            database.execute("UPDATE delay_zones SET expires_at=? WHERE id=?",("2020-01-01T00:00:00+00:00",delay["id"]))
+            database.execute("UPDATE delay_zones SET expires_at=?,next_review_at=? WHERE id=?",("2020-01-01T00:00:00+00:00","2020-01-01T00:00:00+00:00",delay["id"]))
         guidance=self.request("/api/arrival-guidance?department=ROCHA&service=GR%C3%9AA&zone=Zona%20revisi%C3%B3n")
         self.assertEqual(guidance["precedence"],"REVIEW_REQUIRED")
         self.assertFalse(guidance["active_delays"])

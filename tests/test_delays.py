@@ -1,10 +1,48 @@
 import unittest
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 from app.delays import clean_delay, clean_standard, enrich_delay, normalized_key, split_zones, standard_availability, zone_matches
+from app.geography import ALL_DEPARTMENT, URUGUAY_ZONES, geography_payload
+from app.local_server import paged_delays
 
 
 class DelayRulesTests(unittest.TestCase):
+    def test_geography_covers_all_departments_and_defaults_to_whole_department(self):
+        catalog = geography_payload()
+        self.assertEqual(len(catalog), 19)
+        self.assertEqual(set(catalog), set(URUGUAY_ZONES))
+        self.assertTrue(all(zones[0] == ALL_DEPARTMENT and len(zones) > 1 for zones in catalog.values()))
+
+    def test_catalog_zone_cannot_belong_to_another_department(self):
+        base = {"service": "GRÚA", "department": "SALTO", "zone": "Pocitos", "message": "A confirmar", "catalog_zone": True}
+        with self.assertRaisesRegex(ValueError, "Zona inválido"):
+            clean_delay(base)
+        valid = clean_delay({**base, "zone": ALL_DEPARTMENT, "duration_minutes": 30})
+        self.assertEqual(valid["review_minutes"], 30)
+        self.assertEqual(valid["duration_minutes"], 30)
+
+    def test_explicit_next_review_takes_precedence_over_legacy_expiry(self):
+        current = datetime(2026, 9, 11, 15, 0, tzinfo=timezone.utc)
+        item = enrich_delay({"status": "VIGENTE", "expires_at": current + timedelta(hours=2), "next_review_at": current}, current)
+        self.assertTrue(item["needs_review"])
+        self.assertEqual(item["review_due_at"], current.isoformat())
+
+    def test_sqlite_delay_page_filters_and_limits_in_database(self):
+        database = sqlite3.connect(":memory:")
+        database.row_factory = sqlite3.Row
+        try:
+            database.execute("CREATE TABLE delay_zones (id INTEGER PRIMARY KEY,service TEXT,department TEXT,zone TEXT,message TEXT,status TEXT,agent TEXT,created_at TEXT,next_review_at TEXT)")
+            database.executemany("INSERT INTO delay_zones VALUES (?,?,?,?,?,?,?,?,?)", [
+                (number, "GRÚA", "SALTO" if number <= 61 else "ROCHA", f"Zona {number}", "A confirmar", "VIGENTE", "Prueba", f"2026-09-01T00:{number % 60:02d}:00+00:00", "2099-01-01T00:00:00+00:00")
+                for number in range(1, 122)
+            ])
+            page = paged_delays(database, {"department": "SALTO", "limit": "50", "offset": "50"})
+            self.assertEqual((page["total"], len(page["items"]), page["limit"]), (61, 11, 50))
+            with self.assertRaises(ValueError):paged_delays(database, {"limit": "51"})
+        finally:
+            database.close()
+
     def test_delay_normalizes_catalog_values_and_whitespace(self):
         item = clean_delay({
             "service": "grua",
@@ -42,6 +80,7 @@ class DelayRulesTests(unittest.TestCase):
             })
 
     def test_zone_match_is_exact_or_comma_delimited(self):
+        self.assertTrue(zone_matches(ALL_DEPARTMENT, "Pocitos"))
         self.assertTrue(zone_matches("Centro, Parque Rodó", "parque rodo"))
         self.assertFalse(zone_matches("Centro ampliado", "Centro"))
         self.assertEqual(normalized_key(" RÍO  Negro "), "rio negro")

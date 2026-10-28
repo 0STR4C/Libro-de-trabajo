@@ -55,11 +55,13 @@ class TransferApiTests(unittest.TestCase):
         self.assertEqual(status, 201);transfer_id = created["id"]
         self.assertEqual(self.request("/api/transfers", "POST", self.payload())[0], 409)
         self.assertEqual(self.request("/api/transfers", "POST", self.payload(allow_duplicate=True))[0], 201)
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno"})[0], 400)
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "responsible": "Administrador"})[0], 200)
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "EN_CURSO"})[0], 200)
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO"})[0], 400)
-        status, finalized = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "note": "Servicio cumplido"})
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "expected_revision": created["revision"]})[0], 400)
+        assigned = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "responsible": "Administrador", "expected_revision": created["revision"]})
+        self.assertEqual(assigned[0], 200)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "EN_CURSO", "expected_revision": created["revision"]})[0], 409)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "EN_CURSO", "expected_revision": assigned[1]["revision"]})[0], 200)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "expected_revision": assigned[1]["revision"]+1})[0], 400)
+        status, finalized = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "note": "Servicio cumplido", "expected_revision": assigned[1]["revision"]+1})
         self.assertEqual(status, 200);self.assertEqual(finalized["completion_note"], "Servicio cumplido")
         self.assertEqual(self.request(f"/api/transfers/{transfer_id}", "DELETE")[0], 405)
         self.assertEqual(len(self.request(f"/api/transfers/{transfer_id}/events")[1]), 4)
@@ -69,6 +71,33 @@ class TransferApiTests(unittest.TestCase):
         self.assertEqual(self.request("/api/transfers", "POST", self.payload(destination=" pÁnDo "))[0], 422)
         transfer_id = self.request("/api/transfers", "POST", self.payload())[1]["id"]
         self.assertEqual(self.request(f"/api/transfers/{transfer_id}", "PATCH", self.payload(origin="", destination="Montevideo"))[0], 422)
+
+    def test_notice_comment_conflict_keeps_current_state_and_audit(self):
+        status, created = self.request("/api/notices", "POST", {
+            "task_number": "LOCAL-NOTICE-REVISION", "notice_type": "Consulta",
+            "detail": "Prueba de edición simultánea", "allow_duplicate": True,
+        })
+        self.assertEqual(status, 201)
+        item_id = created["id"]
+        status, updated = self.request(f"/api/notices/{item_id}/status", "PATCH", {
+            "expected_revision": created["revision"], "comments": "Seguimiento nuevo",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["revision"], created["revision"] + 1)
+        self.assertEqual(self.request(f"/api/notices/{item_id}")[1]["revision"],updated["revision"])
+        with local_server.connect() as database:
+            before = database.execute("SELECT count(*) FROM audit_events WHERE entity='notice' AND entity_id=?", (item_id,)).fetchone()[0]
+        status, _ = self.request(f"/api/notices/{item_id}/status", "PATCH", {
+            "expected_revision": created["revision"], "status": "RESUELTO",
+            "comments": "Cierre obsoleto",
+        })
+        self.assertEqual(status, 409)
+        with local_server.connect() as database:
+            current = database.execute("SELECT status,comments,revision FROM notices WHERE id=?", (item_id,)).fetchone()
+            after = database.execute("SELECT count(*) FROM audit_events WHERE entity='notice' AND entity_id=?", (item_id,)).fetchone()[0]
+        self.assertEqual((current["status"], current["comments"], current["revision"]),
+                         ("PENDIENTE", "Seguimiento nuevo", updated["revision"]))
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

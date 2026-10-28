@@ -166,6 +166,8 @@ def filter_report_records(kind, records, filters=None, *, managed_by="", current
         if end and (item_date is None or item_date > end):
             continue
         if kind == "notices":
+            if item.get("administratively_retired_at") is not None:
+                continue
             scope = selected.get("scope", "")
             if selected.get("status") and item.get("status") != selected["status"]:
                 continue

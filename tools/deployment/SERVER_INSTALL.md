@@ -97,6 +97,11 @@ Estos ajustes se conservarán en todas las entregas, tomando como referencia
   proxy, firewall ni asigna puertos en el servidor.
 - El proxy HTTPS debe preservar Host con el dominio público; configurar el
   dominio real en URL, hosts y orígenes. No habilitar cookies de producción por HTTP.
+- El proxy debe reenviar la ruta original completa, incluidos accesos directos
+  como `/programados` y `/configuracion/tiempos-estandar`, al mismo backend que
+  recibe `/api`, `/static` y `/health`. La aplicación resuelve esas rutas; no
+  configurar un fallback del proxy que convierta API o archivos faltantes en HTML.
+  Véase `docs/NAVEGACION_URL.md`.
 - Producción limita los logs a tres archivos de 10 MB por servicio. App usa
   proceso init, `no-new-privileges` y un margen inicial de healthcheck de 60 s.
   El arranque concede hasta 240 s para esperar salud de los servicios.

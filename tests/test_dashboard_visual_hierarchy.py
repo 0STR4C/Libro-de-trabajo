@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skip('Contrato visual histórico de app.js; la interfaz vigente se compila con Vite')
 class DashboardVisualHierarchyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

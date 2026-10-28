@@ -1,0 +1,5 @@
+FROM librodetrabajo-app:latest
+
+USER root
+RUN python -m pip install --no-cache-dir pytest==8.4.2
+USER appuser

@@ -1,8 +1,9 @@
 # PostgreSQL aislado para pruebas
 
-Mantiene una instancia PostgreSQL exclusiva para desarrollo y ejecuta
-`tests.test_postgres_security` contra una base interna nueva en cada corrida. No
-comparte red, volumen ni credenciales con la base operativa.
+La base manual `test_operativa` se mantiene mediante `start.ps1`. Cada ejecución
+de `run.ps1` crea otro proyecto Compose con identificador aleatorio, su propia
+red y su propio volumen; ejecuta las pruebas y elimina únicamente ese proyecto.
+No comparte recursos ni credenciales con la base operativa.
 
 La instancia conserva `test_operativa` para reproducir casos manualmente. Está
 publicada solamente en `127.0.0.1:54329`, por lo que no acepta conexiones desde
@@ -49,9 +50,18 @@ Puede validar una imagen candidata sin cambiar etiquetas globales:
 & .\tools\postgres_test_db\run.ps1 -ImageName librodetrabajo-app:1.30.0
 ```
 
-El comando inicia el servidor, crea una base con nombre aleatorio, ejecuta las
-pruebas, elimina solo esa base y detiene el servidor incluso si la suite falla.
-`test_operativa` y el volumen permanecen disponibles para la próxima ejecución.
+Para ejecutar otra suite con la misma base aislada, pasar el comando del
+contenedor en `-TestCommand`. Por ejemplo, la suite Pytest de demoras:
+
+```powershell
+& .\tools\postgres_test_db\run.ps1 -ImageName librodetrabajo-delays-pytest:local -TestCommand @('python','-m','pytest','tests/test_delay_api_pytest.py','-q')
+```
+
+El comando inicia un PostgreSQL efímero con puerto de loopback asignado por
+Docker, ejecuta las pruebas y elimina su propio volumen al terminar. Dos
+ejecuciones pueden convivir. La base manual `test_operativa` y su volumen no se
+tocan. Si la prueba falla y también falla la limpieza, se conserva el primer
+error y se informa el segundo.
 
 ## Detener sin perder datos
 
@@ -65,8 +75,8 @@ La entrada de la suite es el código actual del proyecto, montado como solo lect
 en el contenedor. La salida indica la cantidad vigente de pruebas PostgreSQL y
 su resultado en la consola.
 
-Los recursos pertenecen al proyecto Docker `librodetrabajo-tests`. El volumen
-`librodetrabajo-tests_test_postgres_data` conserva los datos de `test_operativa`.
+Los recursos efímeros pertenecen a un proyecto `librodetrabajo-suite-...`.
+El proyecto manual `librodetrabajo-tests` y su volumen permanecen intactos.
 Ningún script modifica archivos ni datos de la aplicación operativa.
 
 El archivo `AGENTS.md` de la raíz obliga a usar este flujo al finalizar futuras

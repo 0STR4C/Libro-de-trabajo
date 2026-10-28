@@ -10,6 +10,11 @@ body.sidebar-collapsed .sidebar-toggle svg{transform:rotate(180deg)}
 body.sidebar-collapsed .brand-text,body.sidebar-collapsed nav span,body.sidebar-collapsed .sidebar-supervision span,body.sidebar-collapsed .sidebar-bottom span{display:none}
 body.sidebar-collapsed nav button,body.sidebar-collapsed .sidebar-section-toggle,body.sidebar-collapsed .sidebar-bottom>button{justify-content:center;padding:12px 0}
 body.sidebar-collapsed .sidebar-submenu button{padding:12px 0;justify-content:center}
+body aside a[data-page]{display:flex;align-items:center;gap:12px;text-decoration:none}
+body.sidebar-collapsed aside a[data-page]{justify-content:center;padding:12px 0}
+body.sidebar-collapsed aside a[data-page] span{display:none}
+body aside a[data-page].active{background:#1e40af;color:#fff}
+@media(max-width:900px){body.sidebar-collapsed aside a[data-page]{justify-content:flex-start;padding:12px 14px}body.sidebar-collapsed aside a[data-page] span{display:inline}}
 aside nav,aside .sidebar-supervision,aside .sidebar-bottom { display: grid; gap: 4px; }
 aside nav button,aside .sidebar-section-toggle,aside .sidebar-submenu button,aside .sidebar-bottom>button { display: flex; align-items: center; gap: 12px; }
 aside nav{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}
@@ -168,5 +173,6 @@ body{font-size:13px;line-height:1.35}
 #prime-react-root .operational-view :is(h2,h3){color:var(--text);letter-spacing:-.01em}
 #prime-react-root .operational-view .p-card{background:var(--surface);border-color:var(--border);box-shadow:var(--shadow-card)}
 #prime-react-root .operational-view .p-card .p-card-title{color:var(--text);font-weight:700}
+#prime-react-root .operational-view .notice-prime-metric-active{border:2px solid #1E40AF!important}
 
 @media(max-width:700px){#prime-react-root{--view-gutter:16px}#prime-react-root>header .header-title h1{font-size:19px}#prime-react-root>header{margin-bottom:12px}}

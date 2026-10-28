@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError
@@ -130,6 +131,40 @@ class PostgresSecurityTests(unittest.TestCase):
         status, _, _ = self.request("/api/notices", "POST", {"notice_type": "Prueba", "detail": "Prueba"})
         self.assertEqual(status, 403)
 
+    def test_published_team_read_for_staff_does_not_grant_planning_write(self):
+        self.login()
+        first = self.create_test_user('horarios-agente', 'Telefonista')
+        second = self.create_test_user('horarios-planificador', 'Planificador')
+        for user_id, hour in ((first, '09:00'), (second, '14:00')):
+            status, _, _ = self.request('/api/schedules', 'POST', {
+                'user_id': user_id, 'schedule_date': '2027-03-22',
+                'shift_name': 'Histórico de prueba', 'start_time': hour,
+                'end_time': '18:00', 'notes': 'nota personal reservada',
+            }, csrf=True)
+            self.assertEqual(status, 201)
+        for username, own, teammate in (
+            ('horarios-agente', first, second),
+            ('horarios-planificador', second, first),
+        ):
+            opener, jar = self.isolated_client()
+            self.login(username, 'ephemeral-user-password', opener=opener, cookie_jar=jar)
+            status, _, team = self.request('/api/schedules/team?week=2027-03-22', opener=opener, cookie_jar=jar)
+            self.assertEqual(status, 200)
+            self.assertTrue({own, teammate}.issubset({row['user_id'] for row in team['rows']}))
+            self.assertTrue(all('notes' not in row for row in team['rows']))
+            status, _, own_rows = self.request(f'/api/schedules?week=2027-03-22&employee_id={teammate}',
+                                               opener=opener, cookie_jar=jar)
+            self.assertEqual(status, 200)
+            self.assertTrue(all(row['user_id'] == own for row in own_rows))
+            status, _, _ = self.request('/api/schedules', 'POST', {
+                'user_id': teammate, 'schedule_date': '2027-03-23',
+                'shift_name': 'Edición indebida', 'start_time': '08:00', 'end_time': '16:00',
+            }, csrf=True, opener=opener, cookie_jar=jar)
+            self.assertEqual(status, 403)
+            status, _, _ = self.request('/api/wfm/plan?date=2027-03-22&team=Telefonista',
+                                        opener=opener, cookie_jar=jar)
+            self.assertEqual(status, 403)
+
     def test_onboarding_and_admin_password_reset(self):
         from tools.user_onboarding.import_users import provision, validate_roster
         from app.security import verify_password
@@ -145,7 +180,7 @@ class PostgresSecurityTests(unittest.TestCase):
             self.assertNotEqual(accounts[0]['password_hash'],accounts[1]['password_hash'])
         self.login()
         person=accounts[0];password=secrets.token_urlsafe(24)
-        status,_,_=self.request(f"/api/users/{person['id']}",'PATCH',dict(display_name=person['display_name'],email=person['email'],role_id=person['role_id'],active=True,password=password),csrf=True)
+        status,_,_=self.request(f"/api/users/{person['id']}",'PATCH',dict(display_name=person['display_name'],email=person['email'],role_id=person['role_id'],active=True,password=password,expected_revision=person['revision']),csrf=True)
         self.assertEqual(status,200)
         with self.server_module.connect() as db:
             updated=db.execute('SELECT password_hash FROM users WHERE id=%s',(person['id'],)).fetchone()
@@ -165,7 +200,9 @@ class PostgresSecurityTests(unittest.TestCase):
         self.assertEqual(status,200)
         item=next(value for value in items if value['name']=='Peaje temporal')
         payload['price']=500
+        payload['expected_revision']=item['revision']
         self.assertEqual(self.request(f"/api/settings/tolls/{item['id']}",'PATCH',payload,csrf=True)[0],200)
+        self.assertEqual(self.request(f"/api/settings/tolls/{item['id']}",'PATCH',payload,csrf=True)[0],409)
         self.assertEqual(self.request(f"/api/settings/tolls/{item['id']}",'DELETE',{},csrf=True)[0],200)
 
     def test_quote_persists_pricing_snapshot(self):
@@ -187,19 +224,63 @@ class PostgresSecurityTests(unittest.TestCase):
         saved = next(item for item in history if item["id"] == quote["id"])
         self.assertIn("pricing_snapshot", saved)
 
-    def test_quote_history_pagination_and_filters(self):
+    def test_quote_rejects_regional_points_before_routing(self):
+        self.login()
+        with self.server_module.connect() as database:
+            before = database.execute("SELECT count(*) AS total FROM quotes").fetchone()["total"]
+        with patch.object(self.server_module, "route_data") as routing:
+            status, _, body = self.request("/api/quotes/calculate", "POST", {
+                "origin": "-34.6037, -58.3816", "destination": "-34.9011, -56.1645",
+            }, csrf=True)
+            routing.assert_not_called()
+        self.assertEqual(status, 400)
+        self.assertIn("tarifa regional", body["detail"])
+        with self.server_module.connect() as database:
+            after = database.execute("SELECT count(*) AS total FROM quotes").fetchone()["total"]
+        self.assertEqual(after, before)
+
+    def test_quote_capture_destination_rejects_before_route_and_save(self):
+        self.login()
+        with self.server_module.connect() as database:
+            before = database.execute("SELECT count(*) AS total FROM quotes").fetchone()["total"]
+        road = {"distance": 3474.786778, "location": [-58.356012, -33.957245]}
+        with patch.object(self.server_module, "nearest_road", return_value=road), patch.object(self.server_module, "route_data") as routing:
+            status, _, body = self.request("/api/quotes/calculate", "POST", {
+                "origin": "-34.813803, -55.238921", "destination": "-33.979809, -58.382095", "include_mobile": False,
+            }, csrf=True)
+            routing.assert_not_called()
+        self.assertEqual(status, 400)
+        self.assertIn("Destino: ubicación en agua o sin vía cercana", body["detail"])
+        with self.server_module.connect() as database:
+            self.assertEqual(database.execute("SELECT count(*) AS total FROM quotes").fetchone()["total"], before)
+
+    def test_quote_sums_two_mocked_uruguayan_route_segments(self):
+        self.login()
+        routes = [
+            {"km": 12.5, "coordinates": [[-56.17, -34.90], [-56.16, -34.89]]},
+            {"km": 8.25, "coordinates": [[-56.15, -34.88], [-56.17, -34.90]]},
+        ]
+        with patch.object(self.server_module, "route_data", side_effect=routes):
+            status, _, quote = self.request("/api/quotes/calculate", "POST", {
+                "origin": "-34.9000, -56.1700", "destination": "-34.8900, -56.1600",
+                "mobile_origin": "-34.8800, -56.1500", "include_mobile": True,
+            }, csrf=True)
+        self.assertEqual(status, 201)
+        self.assertEqual((quote["trip_km"], quote["mobile_km"], quote["total_km"]), (12.5, 8.25, 20.75))
+        self.assertEqual(quote["route_segments"][0]["label"], "Traslado: origen → destino")
+
+    def test_quote_history_complete_list_and_filters(self):
         self.login()
         status, _, created = self.request(
             "/api/quotes/calculate", "POST",
             {"manual_distance": True, "manual_trip_km": 20, "uninsured": False, "task_number": "PG-EXPORT-PARITY"}, csrf=True,
         )
         self.assertEqual(status, 201)
-        status, _, page = self.request("/api/quotes/history?limit=1&mode=manual&q=PG-EXPORT-PARITY")
+        status, _, history = self.request("/api/quotes/history?mode=manual&q=PG-EXPORT-PARITY")
         self.assertEqual(status, 200)
-        self.assertEqual(page["limit"], 1)
-        self.assertEqual(page["total"], 1)
-        self.assertEqual(len(page["items"]), 1)
-        self.assertEqual(page["items"][0]["origin_input"], "Cotización manual")
+        self.assertIsInstance(history, list)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["origin_input"], "Cotización manual")
         status, _, content = self.request_bytes("/api/reports/quotes.csv?mode=manual&q=PG-EXPORT-PARITY")
         self.assertEqual(status, 200)
         exported = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig")), delimiter=";"))
@@ -541,6 +622,32 @@ class PostgresSecurityTests(unittest.TestCase):
             with self.server_module.connect() as database:
                 database.execute("UPDATE audit_events SET detail='alterado' WHERE id=%s",(event_id,))
 
+    def test_two_users_cannot_restore_closed_notice_with_stale_comment(self):
+        self.login()
+        username=f"notice.race.{time.time_ns()}"
+        self.create_test_user(username,"Telefonista")
+        other,other_cookies=self.isolated_client()
+        self.login(username,"ephemeral-user-password",other,other_cookies)
+        status,_,created=self.request("/api/notices","POST",{
+            "notice_type":"Consulta","detail":"Edición concurrente de prueba"},csrf=True)
+        self.assertEqual(status,201)
+        item_id=created["id"]
+        status,_,listing=self.request("/api/notices/page?scope=all&q=Edici%C3%B3n%20concurrente%20de%20prueba",opener=other,cookie_jar=other_cookies)
+        self.assertEqual(status,200)
+        self.assertIn(item_id,[item["id"] for item in listing["items"]])
+        status,_,closed=self.request(f"/api/notices/{item_id}/status","PATCH",{
+            "expected_revision":created["revision"],"status":"RESUELTO","comments":"Gestión terminada"},csrf=True)
+        self.assertEqual(status,200)
+        status,_,_=self.request(f"/api/notices/{item_id}/status","PATCH",{
+            "expected_revision":created["revision"],"comments":"Seguimiento del segundo usuario"},
+            csrf=True,opener=other,cookie_jar=other_cookies)
+        self.assertEqual(status,409)
+        self.assertEqual(self.request(f"/api/notices/{item_id}",opener=other,cookie_jar=other_cookies)[2]["revision"],closed["revision"])
+        with self.server_module.connect() as database:
+            current=database.execute("SELECT status,comments,revision FROM notices WHERE id=%s",(item_id,)).fetchone()
+        self.assertEqual((current["status"],current["comments"],current["revision"]),
+                         ("RESUELTO","Gestión terminada",closed["revision"]))
+
     def test_notice_permissions_are_independent(self):
         self.login()
         status, _, roles = self.request("/api/settings/roles")
@@ -558,24 +665,33 @@ class PostgresSecurityTests(unittest.TestCase):
         self.assertEqual(
             self.request(
                 f"/api/notices/{validation_notice['id']}/status", "PATCH",
-                {"managed_by": "Persona inexistente"}, csrf=True,
+                {"managed_by": "Persona inexistente", "expected_revision": validation_notice["revision"]}, csrf=True,
             )[0],
             400,
         )
         self.assertEqual(
             self.request(
                 f"/api/notices/{validation_notice['id']}/status", "PATCH",
-                {"status": "RESUELTO"}, csrf=True,
+                {"status": "RESUELTO", "expected_revision": validation_notice["revision"]}, csrf=True,
             )[0],
             400,
         )
         self.assertEqual(
             self.request(
                 f"/api/notices/{validation_notice['id']}/status", "PATCH",
-                {"status": "RESUELTO", "comments": "Gestión finalizada"}, csrf=True,
+                {"status": "RESUELTO", "comments": "Gestión finalizada", "expected_revision": validation_notice["revision"]}, csrf=True,
             )[0],
             200,
         )
+        with self.server_module.connect() as database:
+            before_conflict=database.execute("SELECT count(*) AS total FROM audit_events WHERE entity='notice' AND entity_id=%s",(validation_notice["id"],)).fetchone()["total"]
+        self.assertEqual(self.request(f"/api/notices/{validation_notice['id']}/status","PATCH",
+            {"expected_revision":validation_notice["revision"],"comments":"Comentario obsoleto"},csrf=True)[0],409)
+        with self.server_module.connect() as database:
+            unchanged=database.execute("SELECT status,comments,revision FROM notices WHERE id=%s",(validation_notice["id"],)).fetchone()
+            after_conflict=database.execute("SELECT count(*) AS total FROM audit_events WHERE entity='notice' AND entity_id=%s",(validation_notice["id"],)).fetchone()["total"]
+        self.assertEqual((unchanged["status"],unchanged["comments"],unchanged["revision"]),("RESUELTO","Gestión finalizada",validation_notice["revision"]+1))
+        self.assertEqual(after_conflict,before_conflict)
         phone_role = next(role for role in roles if role["name"] == "Telefonista")
         original_permissions = list(phone_role["permissions"])
         comment_only = [permission for permission in original_permissions if not permission.startswith("notices.")]
@@ -583,7 +699,7 @@ class PostgresSecurityTests(unittest.TestCase):
         try:
             status, _, _ = self.request(
                 f"/api/roles/{phone_role['id']}/permissions", "PATCH",
-                {"permissions": comment_only}, csrf=True,
+                {"permissions": comment_only, "expected_revision": phone_role["revision"]}, csrf=True,
             )
             self.assertEqual(status, 200)
             password = "ephemeral-notice-password"
@@ -609,7 +725,7 @@ class PostgresSecurityTests(unittest.TestCase):
             self.assertEqual(
                 self.request(
                     f"/api/notices/{notice_id}/status", "PATCH",
-                    {"comments": "Comentario permitido"}, csrf=True,
+                    {"comments": "Comentario permitido", "expected_revision": notice["revision"]}, csrf=True,
                     opener=opener, cookie_jar=cookie_jar,
                 )[0],
                 200,
@@ -623,7 +739,7 @@ class PostgresSecurityTests(unittest.TestCase):
             self.assertEqual(
                 self.request(
                     f"/api/notices/{notice_id}/status", "PATCH",
-                    {"status": "EN_GESTION"}, csrf=True,
+                    {"status": "EN_GESTION", "expected_revision": notice["revision"]+1}, csrf=True,
                     opener=opener, cookie_jar=cookie_jar,
                 )[0],
                 403,
@@ -632,7 +748,7 @@ class PostgresSecurityTests(unittest.TestCase):
             self.assertEqual(
                 self.request(
                     f"/api/roles/{phone_role['id']}/permissions", "PATCH",
-                    {"permissions": original_permissions}, csrf=True,
+                    {"permissions": original_permissions, "expected_revision": phone_role["revision"]+1}, csrf=True,
                 )[0],
                 200,
             )
@@ -646,7 +762,7 @@ class PostgresSecurityTests(unittest.TestCase):
         self.assertEqual(
             self.request(
                 f"/api/roles/{admin_role['id']}/permissions", "PATCH",
-                {"permissions": []}, csrf=True,
+                {"permissions": [], "expected_revision": admin_role["revision"]}, csrf=True,
             )[0],
             400,
         )
@@ -654,7 +770,7 @@ class PostgresSecurityTests(unittest.TestCase):
         self.assertEqual(
             self.request(
                 f"/api/roles/{phone_role['id']}/permissions", "PATCH",
-                {"permissions": selected + selected[:1]}, csrf=True,
+                {"permissions": selected + selected[:1], "expected_revision": phone_role["revision"]}, csrf=True,
             )[0],
             200,
         )
@@ -688,7 +804,7 @@ class PostgresSecurityTests(unittest.TestCase):
             role_id = database.execute("SELECT id FROM roles WHERE name='Telefonista'").fetchone()["id"]
         payload = {
             "display_name": "Sesión revocada", "email": "session.revoke.test@portoservicios.com.uy",
-            "role_id": role_id, "active": True, "password": "ephemeral-new-password",
+            "role_id": role_id, "active": True, "password": "ephemeral-new-password", "expected_revision": 1,
         }
         self.assertEqual(self.request(f"/api/users/{user_id}", "PATCH", payload, csrf=True)[0], 200)
         self.assertEqual(self.request("/api/auth/me", opener=user_opener, cookie_jar=user_cookies)[0], 401)
@@ -705,7 +821,7 @@ class PostgresSecurityTests(unittest.TestCase):
             role_id = database.execute("SELECT id FROM roles WHERE name='Planificador'").fetchone()["id"]
         payload = {
             "display_name": "Cambio de rol", "email": "session.role.change.test@portoservicios.com.uy",
-            "role_id": role_id, "active": True, "password": None,
+            "role_id": role_id, "active": True, "password": None, "expected_revision": 1,
         }
         self.assertEqual(self.request(f"/api/users/{user_id}", "PATCH", payload, csrf=True)[0], 200)
         self.assertEqual(self.request("/api/auth/me", opener=user_opener, cookie_jar=user_cookies)[0], 401)
@@ -721,7 +837,7 @@ class PostgresSecurityTests(unittest.TestCase):
             role_id = database.execute("SELECT id FROM roles WHERE name='Telefonista'").fetchone()["id"]
         payload = {
             "display_name": "Usuario desactivado", "email": "session.deactivation.test@portoservicios.com.uy",
-            "role_id": role_id, "active": False, "password": None,
+            "role_id": role_id, "active": False, "password": None, "expected_revision": 1,
         }
         self.assertEqual(self.request(f"/api/users/{user_id}", "PATCH", payload, csrf=True)[0], 200)
         self.assertEqual(self.request("/api/auth/me", opener=user_opener, cookie_jar=user_cookies)[0], 401)
@@ -738,13 +854,13 @@ class PostgresSecurityTests(unittest.TestCase):
         self.login()
         with self.server_module.connect() as database:
             admin = database.execute(
-                "SELECT u.id,u.email,u.display_name,u.role_id FROM users u WHERE username='admin'"
+                "SELECT u.id,u.email,u.display_name,u.role_id,u.revision FROM users u WHERE username='admin'"
             ).fetchone()
             phone_role = database.execute("SELECT id FROM roles WHERE name='Telefonista'").fetchone()["id"]
         base = {
             "display_name": admin["display_name"],
             "email": admin["email"] or "admin@portoservicios.com.uy",
-            "role_id": admin["role_id"], "active": False, "password": None,
+            "role_id": admin["role_id"], "active": False, "password": None, "expected_revision": admin["revision"],
         }
         status, _, body = self.request(f"/api/users/{admin['id']}", "PATCH", base, csrf=True)
         self.assertEqual(status, 400)
@@ -765,12 +881,12 @@ class PostgresSecurityTests(unittest.TestCase):
         self.login("concurrent.admin.test", secondary_password, secondary_opener, secondary_cookies)
         with self.server_module.connect() as database:
             primary = database.execute(
-                "SELECT id,email,display_name,role_id FROM users WHERE username='admin'"
+                "SELECT id,email,display_name,role_id,revision FROM users WHERE username='admin'"
             ).fetchone()
             admin_role_id = primary["role_id"]
             phone_role_id = database.execute("SELECT id FROM roles WHERE name='Telefonista'").fetchone()["id"]
             secondary = database.execute(
-                "SELECT id,email,display_name FROM users WHERE id=%s", (secondary_id,)
+                "SELECT id,email,display_name,revision FROM users WHERE id=%s", (secondary_id,)
             ).fetchone()
 
         barrier = threading.Barrier(2)
@@ -782,7 +898,7 @@ class PostgresSecurityTests(unittest.TestCase):
                 {
                     "display_name": user["display_name"],
                     "email": user["email"] or "admin@portoservicios.com.uy",
-                    "role_id": phone_role_id, "active": True, "password": None,
+                    "role_id": phone_role_id, "active": True, "password": None, "expected_revision": user["revision"],
                 },
                 csrf=True, opener=opener, cookie_jar=cookie_jar,
             )[0]
@@ -849,17 +965,20 @@ class PostgresSecurityTests(unittest.TestCase):
         self.assertEqual(duplicate["detail"]["duplicate"]["id"], transfer_id)
         self.assertEqual(self.request("/api/transfers", "POST", {**payload, "allow_duplicate": True}, csrf=True)[0], 201)
 
-        status, _, body = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno"}, csrf=True)
+        status, _, body = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "expected_revision": created["revision"]}, csrf=True)
         self.assertEqual(status, 400)
         self.assertIn("responsable", body["detail"])
         people = self.request("/api/transfers/responsibles")[2]
         self.assertTrue(any(person["display_name"] == "Administrador" for person in people))
-        assigned = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "responsible": "Administrador"}, csrf=True)
+        assigned = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "ASIGNADO", "provider": "Auxilio Uno", "responsible": "Administrador", "expected_revision": created["revision"]}, csrf=True)
         self.assertEqual(assigned[0], 200)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}")[2]["revision"],assigned[2]["revision"])
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status":"EN_CURSO","expected_revision":created["revision"]}, csrf=True)[0],409)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}", "PATCH", {**payload,"expected_revision":created["revision"]}, csrf=True)[0],409)
         self.assertIsNotNone(assigned[2]["assigned_at"])
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "EN_CURSO"}, csrf=True)[0], 200)
-        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO"}, csrf=True)[0], 400)
-        finalized = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "note": "Entregado correctamente"}, csrf=True)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "EN_CURSO", "expected_revision": assigned[2]["revision"]}, csrf=True)[0], 200)
+        self.assertEqual(self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "expected_revision": assigned[2]["revision"]+1}, csrf=True)[0], 400)
+        finalized = self.request(f"/api/transfers/{transfer_id}/status", "PATCH", {"status": "FINALIZADO", "note": "Entregado correctamente", "expected_revision": assigned[2]["revision"]+1}, csrf=True)
         self.assertEqual(finalized[0], 200)
         self.assertEqual(finalized[2]["completion_note"], "Entregado correctamente")
         self.assertEqual(self.request(f"/api/transfers/{transfer_id}", "DELETE", csrf=True)[0], 405)

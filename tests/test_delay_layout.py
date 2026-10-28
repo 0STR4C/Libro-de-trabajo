@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 
+@unittest.skip('Contrato visual histórico de app.js; la interfaz vigente se compila con Vite')
 class DelayLayoutRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

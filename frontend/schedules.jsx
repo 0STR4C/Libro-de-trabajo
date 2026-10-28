@@ -3,123 +3,168 @@ import { Button } from 'primereact/button';
 import { Calendar } from 'primereact/calendar';
 import { Card } from 'primereact/card';
 import { Column } from 'primereact/column';
-import { DataTable } from './dense-table.jsx';
-import { Dialog } from 'primereact/dialog';
 import { Dropdown } from 'primereact/dropdown';
 import { InputText } from 'primereact/inputtext';
-import { InputTextarea } from 'primereact/inputtextarea';
 import { ProgressSpinner } from 'primereact/progressspinner';
 import { SelectButton } from 'primereact/selectbutton';
-import { createScheduleResponseGate, indexSchedules, scheduleDay, schedulePeople, shiftScheduleDay } from './schedule-grid.js';
+import { DataTable } from './dense-table.jsx';
+import { createScheduleResponseGate, indexSchedules, shiftScheduleDay } from './schedule-grid.js';
 
-const dayISO = value => value instanceof Date ? iso(value) : /^\d{4}-\d{2}-\d{2}/.test(String(value || '')) ? String(value).slice(0, 10) : '';
-const date = value => dayISO(value) ? new Date(`${dayISO(value)}T12:00:00`) : null;
+const weekdays = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+const dayColors = [
+  'tw-bg-sky-50 dark:tw-bg-sky-950/40',
+  'tw-bg-indigo-50 dark:tw-bg-indigo-950/40',
+  'tw-bg-violet-50 dark:tw-bg-violet-950/40',
+  'tw-bg-cyan-50 dark:tw-bg-cyan-950/40',
+  'tw-bg-blue-50 dark:tw-bg-blue-950/40',
+  'tw-bg-slate-100 dark:tw-bg-slate-800',
+  'tw-bg-zinc-100 dark:tw-bg-zinc-800',
+];
 const iso = value => value ? `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}` : '';
-const shift = shiftScheduleDay;
-const clock = value => value == null ? '' : `${String(Math.floor(Number(value) / 2) % 24).padStart(2, '0')}:${Number(value) % 2 ? '30' : '00'}${Number(value) >= 48 ? ' +1' : ''}`;
-const summary = row => {
-  if (row.draft_day) return <strong>Borrador sin publicar</strong>;
-  if (row.published_day) return <strong>Libre publicado</strong>;
-  const segments = Array.isArray(row.segments) ? row.segments : [];
-  const hours = segments.length ? segments.map(item => `${clock(item.start)}–${clock(item.end)}`).join(' · ') : row.start_time ? `${String(row.start_time).slice(0, 5)}–${String(row.end_time || '').slice(0, 5)}` : row.shift_name || 'Sin horario';
-  return <div className="tw-grid"><strong>{hours}</strong>{row.break_slot != null && <small>Descanso {clock(row.break_slot)}–{clock(Number(row.break_slot) + (row.break_duration || 1))}</small>}{row.notes && <small>{row.notes}</small>}{(row.exceptions || []).map((item, index) => <small key={index}>{item.type}: {clock(item.start)}–{clock(item.end)}</small>)}</div>;
-};
-const personalSummary = (row, continuation) => continuation
-  ? <div className="tw-grid"><small>Continúa del día anterior</small><strong>Hasta {clock(row.end_slot)}</strong>{row.break_slot != null && Number(row.break_slot) + Number(row.break_duration || 1) > 48 && <small>Descanso {clock(Math.max(48, row.break_slot))}–{clock(Number(row.break_slot) + Number(row.break_duration || 1))}</small>}{(row.exceptions || []).filter(item => item.end > 48).map((item, index) => <small key={index}>{item.type}: {clock(Math.max(48, item.start))}–{clock(item.end)}</small>)}</div>
-  : summary(row);
-const operationalSlots = row => (row.segments || []).reduce((total, segment) => {
-  for (let slot = segment.start; slot < segment.end; slot += 1) {
-    const onBreak = row.break_slot != null && row.break_slot <= slot && slot < Number(row.break_slot) + Number(row.break_duration || 1);
-    const excepted = (row.exceptions || []).some(item => item.start <= slot && slot < item.end);
-    if (!onBreak && !excepted) total += 1;
+const date = value => value ? new Date(`${value}T12:00:00`) : null;
+const monday = value => shiftScheduleDay(value, -((date(value).getDay() + 6) % 7));
+const clock = slot => slot == null ? '—' : `${String(Math.floor(Number(slot) / 2) % 24).padStart(2, '0')}:${Number(slot) % 2 ? '30' : '00'}${Number(slot) >= 48 ? ' +1' : ''}`;
+const minutesText = minutes => `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+
+function plannedMinutes(row, continuation = false) {
+  if (row.published_day) return 0;
+  const floor = continuation ? 48 : 0;
+  const ceiling = continuation ? 96 : 72;
+  const segments = row.segments?.length ? row.segments : row.start_slot != null && row.end_slot != null ? [{ start: row.start_slot, end: row.end_slot }] : [];
+  let slots = 0;
+  for (const segment of segments) {
+    const start = Math.max(floor, Number(segment.start));
+    const end = Math.min(ceiling, Number(segment.end));
+    if (end <= start) continue;
+    slots += end - start;
+    if (row.break_slot != null) {
+      const breakStart = Number(row.break_slot);
+      const breakEnd = breakStart + Number(row.break_duration || 1);
+      slots -= Math.max(0, Math.min(end, breakEnd) - Math.max(start, breakStart));
+    }
   }
-  return total;
-}, 0);
+  return Math.max(0, slots * 30);
+}
+
+function ShiftDetail({ entry, compact = false }) {
+  const { row, continuation } = entry;
+  if (row.published_day) return <span className="tw-text-app-muted">Libre publicado</span>;
+  if (continuation) {
+    const breakStart = Number(row.break_slot);
+    const breakEnd = breakStart + Number(row.break_duration || 1);
+    return <div className="tw-grid tw-gap-1 tw-rounded tw-border tw-border-app-border tw-p-2">
+      <span className="tw-font-medium">Continúa del día anterior</span>
+      <span>Salida {clock(Number(row.end_slot) - 48)}</span>
+      {row.break_slot != null && breakEnd > 48 && <span className="tw-text-app-muted">Descanso {clock(Math.max(48, breakStart) - 48)}–{clock(breakEnd - 48)}</span>}
+      {!compact && <span className="tw-text-app-muted">Tramo {minutesText(plannedMinutes(row, true))}</span>}
+    </div>;
+  }
+  const segments = row.segments?.length ? row.segments : row.start_slot != null && row.end_slot != null ? [{ start: row.start_slot, end: row.end_slot }] : [];
+  return <div className="tw-grid tw-gap-1 tw-rounded tw-border tw-border-app-border tw-p-2">
+    {segments.map((segment, index) => <div key={index} className="tw-grid tw-gap-0.5">
+      <><strong className="tw-font-semibold">Entrada {clock(segment.start)}</strong><span>Salida {clock(segment.end)}</span></>
+    </div>)}
+    {row.break_slot != null && <span className="tw-text-app-muted">Descanso {clock(row.break_slot)}–{clock(Number(row.break_slot) + Number(row.break_duration || 1))}</span>}
+    {Number(row.overtime_slots) > 0 && <span className="tw-text-app-muted">Extras {minutesText(Number(row.overtime_slots) * 30)}</span>}
+    {!compact && <span className="tw-text-app-muted">Duración {minutesText(plannedMinutes(row))}</span>}
+  </div>;
+}
+
+function DayEntries({ entries, compact = false }) {
+  if (!entries.length) return <span className="tw-text-app-muted">Sin publicación</span>;
+  return <div className="tw-grid tw-gap-1">{entries.map((entry, index) => <ShiftDetail key={`${entry.row.id}:${entry.continuation}:${index}`} entry={entry} compact={compact} />)}</div>;
+}
 
 export function SchedulesView({ model }) {
-  const [filters, setFilters] = useState(model.filters);
-  const [rows, setRows] = useState(model.rows);
-  const [isLoading, setIsLoading] = useState(model.filters.view === 'week');
-  const [requests, setRequests] = useState(model.requests || []);
-  const [loadError, setLoadError] = useState('');
-  const responseGate = useRef(null);
-  const localRequestActive = useRef(false);
-  const [requestOpen, setRequestOpen] = useState(false);
-  const [requestForm, setRequestForm] = useState({ requested_date: '', request_type: 'AUSENCIA', reason: '', requested_start: null, requested_end: null });
-  const [requestError, setRequestError] = useState('');
-  const [requestBusy, setRequestBusy] = useState(false);
-  const [cancelTarget, setCancelTarget] = useState(null);
-  const requestFlight = useRef(false);
-  const cancelRequest = async () => {
-    if (!cancelTarget || requestFlight.current) return;
-    const target = cancelTarget;
-    requestFlight.current = true; setRequestBusy(true); setRequestError(''); setCancelTarget(null);
+  const [view, setView] = useState(model.filters.view === 'mine' ? 'mine' : 'team');
+  const [week, setWeek] = useState(model.filters.week);
+  const [snapshot, setSnapshot] = useState(model.snapshot);
+  const [search, setSearch] = useState('');
+  const [role, setRole] = useState('');
+  const [focusDay, setFocusDay] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const gate = useRef(createScheduleResponseGate(model.filters.week));
+  const localRequest = useRef(false);
+
+  const loadWeek = async value => {
+    const next = monday(value);
+    const ticket = gate.current.begin(next);
+    localRequest.current = true;
+    setWeek(next); setFocusDay(''); setLoading(true); setError(''); setSnapshot(null);
+    model.onStateChange?.({ week: next, view });
     try {
-      await model.request('/api/wfm/requests', { method: 'POST', body: JSON.stringify({ operation: 'cancel', request_id: target.request_id }) });
-      setRequests(await model.request('/api/wfm/requests?scope=mine'));
-    } catch (error) {
-      setRequestError(error.message);
-      if (error.payload?.detail?.code === 'WFM_REQUEST_ALREADY_RESOLVED') model.request('/api/wfm/requests?scope=mine').then(setRequests).catch(() => {});
-    } finally { requestFlight.current = false; setRequestBusy(false); }
-  };
-  const set = (key, value) => setFilters(current => ({ ...current, [key]: value }));
-  const paramsFor = values => { const params = new URLSearchParams(); if (values.view === 'week') params.set('week', values.week); else { if (values.from) params.set('date_from', values.from); if (values.to) params.set('date_to', values.to); } if (values.employee === 'mine') params.set('employee_id', model.userId); else if (values.employee !== 'team') params.set('employee_id', values.employee); if (values.role) params.set('role', values.role); if (values.search) params.set('q', values.search); return params; };
-  if (!responseGate.current) responseGate.current = createScheduleResponseGate(paramsFor(model.filters).toString());
-  const fetchRows = async values => {
-    const ticket = responseGate.current.begin(paramsFor(values).toString());
-    localRequestActive.current = true;
-    setLoadError('');
-    setIsLoading(true);
-    setRows([]);
-    try {
-      const params = paramsFor(values);
-      const previous = values.view === 'week' ? shift(values.week, -1) : null;
-      const previousParams = previous ? new URLSearchParams(params) : null;
-      if (previousParams) { previousParams.delete('week'); previousParams.set('date_from', previous); previousParams.set('date_to', previous); }
-      if (previous && model.manager) params.set('include_free_days', '1');
-      const start = previous || values.week;
-      const end = shift(values.week, 6);
-      const [response, earlier] = await Promise.all([
-        !model.manager && previous
-          ? model.request(`/api/wfm/mine?from=${start}&to=${end}`)
-          : model.request(`/${previous && model.manager ? 'api/wfm/published' : 'api/schedules'}?${params}`),
-        previousParams && model.manager ? model.request(`/api/schedules?${previousParams}`) : Promise.resolve([])
-      ]);
-      const normalized = !model.manager && previous
-        ? response.map(row => ({ ...row, user_id: model.userId, display_name: model.currentUser,
-            role_name: model.currentRole, schedule_date: row.date, start_slot: row.start,
-            end_slot: row.end, break_slot: row.break }))
-        : response;
-      if (responseGate.current.accepts(ticket)) setRows([...normalized, ...earlier.filter(row => Number(row.end_slot) > 48)]);
-    } catch (error) { if (responseGate.current.accepts(ticket)) setLoadError(error.message); }
-    finally { if (responseGate.current.accepts(ticket)) { localRequestActive.current = false; setIsLoading(false); } }
+      const result = await model.request(`/api/schedules/team?week=${encodeURIComponent(next)}`);
+      if (gate.current.accepts(ticket)) setSnapshot(result);
+    } catch (failure) {
+      if (gate.current.accepts(ticket)) setError(failure.message);
+    } finally {
+      if (gate.current.accepts(ticket)) { localRequest.current = false; setLoading(false); }
+    }
   };
   useEffect(() => {
-    if (localRequestActive.current || !responseGate.current.matches(paramsFor(model.filters).toString())) return;
-    if (model.filters.view === 'week') fetchRows(model.filters);
-    else { setRows(model.rows); setLoadError(''); }
-  }, [model.rows, model.filters]);
-  useEffect(() => () => { responseGate.current.invalidate(); }, []);
-  const apply = values => { setFilters({ ...values }); model.onStateChange?.(values); fetchRows(values); };
-  const navigate = daysOffset => apply({ ...filters, week: shift(filters.week, daysOffset), view: 'week' });
-  const clear = () => apply({ view: 'history', week: model.currentWeek, from: '', to: '', employee: 'team', role: '', search: '' });
-  const days = Array.from({ length: 7 }, (_, index) => shift(filters.week, index));
-  const rangeRows = useMemo(() => filters.view === 'week' ? rows.filter(row => scheduleDay(row.schedule_date) >= days[0] && scheduleDay(row.schedule_date) <= days[6]) : rows, [rows, filters.view, filters.week]);
-  const people = useMemo(() => schedulePeople(model.people, rows), [model.people, rows]);
-  const scheduleIndex = useMemo(() => indexSchedules(rows), [rows]);
-  const visiblePeople = people.filter(person => (filters.employee === 'team' || filters.employee === 'mine' && Number(person.id) === Number(model.userId) || Number(person.id) === Number(filters.employee)) && (!filters.role || person.role_name === filters.role) && (!filters.search || scheduleIndex.peopleWithRows.has(Number(person.id)) || person.display_name?.toLocaleLowerCase().includes(filters.search.toLocaleLowerCase())));
-  const requestsByDay = useMemo(() => { const index = new Map(); for (const item of requests) { const day = dayISO(item.requested_date); if (!index.has(day)) index.set(day, []); index.get(day).push(item); } return index; }, [requests]);
-  const personalDays = days.map(day => ({ day, entries: scheduleIndex.byDay.get(day) || [], requests: requestsByDay.get(day) || [] }));
-  const plannedHours = rangeRows.reduce((total, row) => total + (row.segments || []).reduce((sum, segment) => sum + Number(segment.end - segment.start || 0), 0), 0) / 2;
-  const overtimeHours = rangeRows.reduce((total, row) => total + Number(row.overtime_slots || 0), 0) / 2;
-  const operativeHours = rangeRows.reduce((total, row) => total + operationalSlots(row), 0) / 2;
-  const submitRequest = async event => { event.preventDefault(); if(requestFlight.current)return;requestFlight.current=true;setRequestBusy(true); setRequestError(''); try { await model.request('/api/wfm/requests', { method: 'POST', body: JSON.stringify(requestForm) }); setRequests(await model.request('/api/wfm/requests?scope=mine')); setRequestOpen(false); } catch (error) { setRequestError(error.message); } finally { requestFlight.current=false;setRequestBusy(false); } };
-  return <div className="operational-view tw-grid tw-min-w-0 tw-gap-3 tw-text-[13px]">{loadError && <p role="alert">{loadError}</p>}<Card className="tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-3"><strong>{rangeRows.filter(row => !row.draft_day && !row.published_day).length} horarios publicados</strong>{model.canExport && <Button className="tw-h-9" label="Descargar reporte" icon="pi pi-download" outlined size="small" onClick={() => model.onExport(paramsFor(filters))} />}</div><div className="tw-mt-3 tw-grid tw-gap-3"><SelectButton value={filters.view} options={[{ label: 'Semana', value: 'week' }, { label: 'Historial', value: 'history' }]} onChange={event => event.value && apply({ ...filters, view: event.value })} />{filters.view === 'week' && <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-2"><Button className="tw-h-9" icon="pi pi-chevron-left" outlined size="small" aria-label="Semana anterior" onClick={() => navigate(-7)} /><strong>Semana del {filters.week}</strong><Button className="tw-h-9" icon="pi pi-chevron-right" outlined size="small" aria-label="Semana siguiente" onClick={() => navigate(7)} /><Button className="tw-h-9" label="Esta semana" text size="small" onClick={() => apply({ ...filters, week: model.currentWeek, view: 'week' })} /></div>}<div className="tw-flex tw-flex-wrap tw-items-end tw-gap-4"><label>Persona<Dropdown appendTo={document.body} className="tw-block tw-h-9" value={filters.employee} options={[{ label: 'Todo el equipo', value: 'team' }, { label: 'Mis horarios', value: 'mine' }, ...people.map(person => ({ label: person.display_name, value: String(person.id) }))]} onChange={event => set('employee', event.value)} filter /></label><label>Rol<Dropdown appendTo={document.body} className="tw-block tw-h-9" value={filters.role} options={[{ label: 'Todos los roles', value: '' }, ...[...new Set(people.map(person => person.role_name).filter(Boolean))].map(value => ({ label: value, value }))]} onChange={event => set('role', event.value)} /></label>{filters.view === 'history' && <><label>Desde<Calendar appendTo={document.body} className="tw-inline-flex tw-h-9 tw-w-full tw-min-w-0" inputClassName="tw-w-full tw-min-w-0 tw-flex-1" pt={{ dropdownButton: { className: 'tw-static tw-inline-flex tw-h-9 tw-w-9 tw-shrink-0 tw-items-center tw-justify-center tw-p-0' } }} value={date(filters.from)} onChange={event => set('from', iso(event.value))} dateFormat="dd/mm/yy" showIcon /></label><label>Hasta<Calendar appendTo={document.body} className="tw-inline-flex tw-h-9 tw-w-full tw-min-w-0" inputClassName="tw-w-full tw-min-w-0 tw-flex-1" pt={{ dropdownButton: { className: 'tw-static tw-inline-flex tw-h-9 tw-w-9 tw-shrink-0 tw-items-center tw-justify-center tw-p-0' } }} value={date(filters.to)} onChange={event => set('to', iso(event.value))} dateFormat="dd/mm/yy" showIcon /></label></>}<label>Buscar<InputText className="tw-block tw-h-9" value={filters.search} onChange={event => set('search', event.target.value)} onKeyDown={event => event.key === 'Enter' && apply(filters)} placeholder="Turno, nota o persona" /></label><Button className="tw-h-9" label="Aplicar filtros" size="small" onClick={() => apply(filters)} /><Button className="tw-h-9" label="Limpiar" text size="small" onClick={clear} /></div></div></Card>
-{!isLoading && !loadError && !model.manager && filters.view === 'week' && <><Card className="tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-gap-3"><strong>{plannedHours} h planificadas</strong><span>{operativeHours} h operativas</span><span>{overtimeHours} h extra</span></div></Card><div className="tw-grid tw-gap-3 sm:tw-grid-cols-2 xl:tw-grid-cols-4">{personalDays.map(({ day, entries, requests: dayRequests }, index) => <Card key={day} title={['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'][index] + ' ' + day.slice(8) + '/' + day.slice(5, 7)} className="tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm">{dayRequests.map(item => <p key={item.request_id}>Solicitud {item.request_type} · {item.status}</p>)}{entries.length ? entries.map(({ row, continuation }) => <div key={`${row.id}:${continuation}`} className="tw-mb-2 tw-rounded-md tw-border tw-p-2">{personalSummary(row, continuation)}</div>) : <p>Sin publicación para este día</p>}</Card>)}</div></>}
-    {!isLoading && !loadError && (model.manager || filters.view !== 'week') && <Card className="tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}><DataTable stripedRows value={filters.view === 'week' ? visiblePeople : rangeRows} dataKey="id" paginator rows={50} size="small" emptyMessage="No hay horarios para los filtros seleccionados" className="schedule-react-table"><Column header="Persona" body={row => row.display_name || 'Usuario inactivo'} />{filters.view === 'week' ? days.map((day, index) => <Column key={day} header={`${['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'][index]} ${day.slice(8)}/${day.slice(5, 7)}`} body={person => { const entries = scheduleIndex.byPersonDay.get(`${person.id}:${day}`) || []; return entries.length ? entries.map(({ row, continuation }) => <div key={`${row.id}:${continuation}`}>{continuation ? personalSummary(row, true) : summary(row)}</div>) : 'Sin publicación'; }} />) : <><Column header="Fecha" body={row => String(row.schedule_date).slice(0, 10)} /><Column field="role_name" header="Rol" /><Column header="Horario publicado" body={summary} /><Column header="Origen" body={row => row.source === 'legacy' ? 'Histórico' : `WFM #${row.revision}`} /></>}</DataTable></Card>}
-    {isLoading && <div role="status" className="tw-flex tw-items-center tw-gap-3 tw-p-4"><ProgressSpinner style={{width:28,height:28}} strokeWidth="5"/>Cargando horarios…</div>}
-    {model.canRequest && <Card title="Mis solicitudes" className="tw-min-w-0 tw-rounded-md tw-border tw-border-slate-200 tw-bg-white tw-shadow-sm"><Button className="tw-h-9" label="Nueva solicitud" icon="pi pi-plus" size="small" onClick={() => setRequestOpen(true)} /><DataTable stripedRows value={requests} dataKey="request_id" paginator rows={50} size="small" scrollable emptyMessage="No hay solicitudes"><Column field="requested_date" header="Fecha" className="tw-whitespace-nowrap" /><Column field="request_type" header="Tipo" /><Column field="reason" header="Motivo" className="operational-long-text" style={{ minWidth: '250px', whiteSpace: 'normal', wordWrap: 'break-word' }} /><Column field="status" header="Estado" /><Column header="Resolución" body={row => <span>{row.resolution_note || '—'}{row.resolved_by ? ' · ' + row.resolved_by : ''}</span>} /><Column header="Acción" body={row => row.status === 'PENDIENTE' && <Button className="tw-h-9" label="Cancelar" text severity="danger" size="small" disabled={requestBusy} onClick={() => setCancelTarget(row)} />} /></DataTable>{requestError && <p role="alert">{requestError}</p>}</Card>}
-    <Dialog header="Nueva solicitud de horario" visible={requestOpen} onHide={() => setRequestOpen(false)} modal appendTo={document.body} style={{ width: 'min(560px, 95vw)' }}><form onSubmit={submitRequest} className="tw-flex tw-flex-col tw-gap-4"><label>Fecha<Calendar appendTo={document.body} className="tw-inline-flex tw-h-9 tw-w-full tw-min-w-0" inputClassName="tw-w-full tw-min-w-0 tw-flex-1" pt={{ dropdownButton: { className: 'tw-static tw-inline-flex tw-h-9 tw-w-9 tw-shrink-0 tw-items-center tw-justify-center tw-p-0' } }} value={date(requestForm.requested_date)} onChange={event => setRequestForm(current => ({ ...current, requested_date: iso(event.value) }))} dateFormat="dd/mm/yy" showIcon /></label><label>Tipo<Dropdown appendTo={document.body} className="tw-block tw-h-9" value={requestForm.request_type} options={[{ label: 'Ausencia', value: 'AUSENCIA' }, { label: 'Cambio de turno', value: 'CAMBIO_TURNO' }]} onChange={event => setRequestForm(current => ({ ...current, request_type: event.value }))} /></label>{requestForm.request_type === 'CAMBIO_TURNO' && <><label>Inicio solicitado (franja de 30 min)<InputText className="tw-h-9" type="number" min="0" max="47" value={requestForm.requested_start ?? ''} onChange={event => setRequestForm(current => ({ ...current, requested_start: Number(event.target.value) }))} required /></label><label>Fin solicitado (franja de 30 min)<InputText className="tw-h-9" type="number" min="1" max="72" value={requestForm.requested_end ?? ''} onChange={event => setRequestForm(current => ({ ...current, requested_end: Number(event.target.value) }))} required /></label></>}<label>Motivo<InputTextarea value={requestForm.reason} onChange={event => setRequestForm(current => ({ ...current, reason: event.target.value }))} required minLength={3} maxLength={500} /></label>{requestError && <p role="alert">{requestError}</p>}<div className="tw-flex tw-justify-end tw-gap-2"><Button className="tw-h-9" type="button" label="Cancelar" text onClick={() => setRequestOpen(false)} /><Button className="tw-h-9" type="submit" label="Enviar solicitud" loading={requestBusy} /></div></form></Dialog>
-    <Dialog header="Cancelar solicitud" visible={Boolean(cancelTarget)} onHide={() => setCancelTarget(null)} modal appendTo={document.body} style={{ width: 'min(480px, 95vw)' }}><p>¿Cancelar la solicitud pendiente del {cancelTarget?.requested_date || ''}?</p><div className="tw-mt-3 tw-flex tw-justify-end tw-gap-2"><Button className="tw-h-9" label="Conservar" text onClick={() => setCancelTarget(null)} /><Button className="tw-h-9" label="Cancelar solicitud" severity="danger" loading={requestBusy} onClick={cancelRequest} /></div></Dialog>
+    if (localRequest.current || !gate.current.matches(model.filters.week)) return;
+    setWeek(model.filters.week); setSnapshot(model.snapshot); setError('');
+  }, [model.snapshot, model.filters.week]);
+  useEffect(() => { setView(model.filters.view === 'mine' ? 'mine' : 'team'); }, [model.filters.view]);
+  useEffect(() => () => gate.current.invalidate(), []);
+
+  const selectView = value => { if (!value) return; setView(value); setFocusDay(''); model.onStateChange?.({ week, view: value }); };
+  const today = iso(new Date());
+  const days = useMemo(() => Array.from({ length: 7 }, (_, index) => shiftScheduleDay(week, index)), [week]);
+  const index = useMemo(() => indexSchedules(snapshot?.rows || []), [snapshot]);
+  const people = snapshot?.people || [];
+  const filteredPeople = useMemo(() => people.filter(person =>
+    (!role || person.role_name === role) &&
+    (!search.trim() || person.display_name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()))
+  ), [people, role, search]);
+  const roles = useMemo(() => [...new Set(people.map(person => person.role_name).filter(Boolean))], [people]);
+  const displayedDays = focusDay && days.includes(focusDay) ? [focusDay] : days;
+  const ownDays = days.map((day, position) => ({ day, position, entries: index.byPersonDay.get(`${model.userId}:${day}`) || [] }));
+  const ownMinutes = ownDays.reduce((sum, item) => sum + item.entries.reduce((total, entry) => total + (entry.continuation && days.includes(entry.row.schedule_date) ? 0 : plannedMinutes(entry.row, entry.continuation)), 0), 0);
+
+  return <div className="tw-grid tw-min-w-0 tw-gap-3 tw-text-[13px]">
+    <Card className="tw-rounded-md tw-border tw-border-app-border tw-bg-app-surface tw-shadow-sm">
+      <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-3">
+        <SelectButton aria-label="Vista de horarios" value={view} options={[{ label: 'Equipo', value: 'team' }, { label: 'Mis horarios', value: 'mine' }]} onChange={event => selectView(event.value)} />
+        {model.canRequest && <Button label="Mis solicitudes" icon="pi pi-inbox" text size="small" onClick={model.onOpenRequests} />}
+      </div>
+      <div className="tw-mt-3 tw-flex tw-flex-wrap tw-items-end tw-gap-3">
+        <Button icon="pi pi-chevron-left" outlined size="small" aria-label="Semana anterior" onClick={() => loadWeek(shiftScheduleDay(week, -7))} />
+        <label className="tw-grid tw-gap-1">Semana de<Calendar appendTo={document.body} value={date(week)} onChange={event => event.value && loadWeek(iso(event.value))} dateFormat="dd/mm/yy" showIcon /></label>
+        <Button icon="pi pi-chevron-right" outlined size="small" aria-label="Semana siguiente" onClick={() => loadWeek(shiftScheduleDay(week, 7))} />
+        <Button label="Hoy" icon="pi pi-calendar" outlined size="small" onClick={() => { if (monday(today) !== week) loadWeek(today); setFocusDay(today); }} />
+        {focusDay && <Button label="Semana completa" text size="small" onClick={() => setFocusDay('')} />}
+        <span className="tw-self-center tw-font-semibold tw-text-app-text">{days[0].slice(8)}/{days[0].slice(5, 7)} – {days[6].slice(8)}/{days[6].slice(5, 7)}/{days[6].slice(0, 4)}</span>
+      </div>
+    </Card>
+
+    {view === 'team' && <Card className="tw-rounded-md tw-border tw-border-app-border tw-bg-app-surface tw-shadow-sm">
+      <div className="tw-flex tw-flex-wrap tw-items-end tw-gap-3">
+        <label className="tw-grid tw-min-w-[230px] tw-flex-1 tw-gap-1">Buscar compañero<InputText value={search} onChange={event => setSearch(event.target.value)} placeholder="Nombre" /></label>
+        <label className="tw-grid tw-min-w-[180px] tw-gap-1">Rol<Dropdown appendTo={document.body} value={role} options={[{ label: 'Todos', value: '' }, ...roles.map(value => ({ label: value, value }))]} onChange={event => setRole(event.value)} /></label>
+        <span className="tw-self-center tw-text-app-muted">{filteredPeople.length} personas</span>
+      </div>
+    </Card>}
+
+    {loading && <div role="status" className="tw-flex tw-items-center tw-gap-3 tw-p-4"><ProgressSpinner style={{ width: 26, height: 26 }} strokeWidth="5" />Cargando horarios…</div>}
+    {error && <Card className="tw-border tw-border-red-200 tw-bg-app-surface"><div role="alert" className="tw-flex tw-flex-wrap tw-items-center tw-gap-3"><strong>Error de carga</strong><span>{error}</span><Button label="Reintentar" size="small" onClick={() => loadWeek(week)} /></div></Card>}
+
+    {!loading && !error && snapshot && view === 'team' && <Card className="tw-min-w-0 tw-rounded-md tw-border tw-border-app-border tw-bg-app-surface tw-shadow-sm" pt={{ body: { className: 'tw-p-0' }, content: { className: 'tw-p-0' } }}>
+      <DataTable value={filteredPeople} dataKey="id" paginator rows={50} scrollable scrollHeight="min(65vh, 660px)" emptyMessage="No hay personas para la búsqueda" rowClassName={person => Number(person.id) === Number(model.userId) ? '[&>td]:tw-bg-blue-50/70 dark:[&>td]:tw-bg-blue-950/30' : ''} className="tw-min-w-0 [&_.p-datatable-thead>tr>th]:tw-sticky [&_.p-datatable-thead>tr>th]:tw-top-0 [&_.p-datatable-thead>tr>th]:tw-z-20">
+        <Column frozen alignFrozen="left" header="Persona" style={{ minWidth: '190px', width: '190px' }} body={person => <div className="tw-grid tw-gap-0.5"><strong className="tw-font-semibold">{person.display_name}</strong><small className="tw-text-app-muted">{person.role_name}{Number(person.id) === Number(model.userId) ? ' · Vos' : ''}</small></div>} />
+        {displayedDays.map(day => { const dayIndex = days.indexOf(day); return <Column key={day} headerClassName={dayColors[dayIndex]} header={<div className={`tw-grid tw-gap-0.5 tw-rounded tw-p-1 ${dayColors[dayIndex]} ${day === today ? 'tw-ring-1 tw-ring-blue-300' : ''}`}><strong>{weekdays[dayIndex]}</strong><span>{day.slice(8)}/{day.slice(5, 7)}</span></div>} style={{ minWidth: '158px', width: '158px', verticalAlign: 'top' }} body={person => <DayEntries compact entries={index.byPersonDay.get(`${person.id}:${day}`) || []} />} />; })}
+      </DataTable>
+    </Card>}
+
+    {!loading && !error && snapshot && view === 'mine' && <>
+      <Card className="tw-rounded-md tw-border tw-border-app-border tw-bg-app-surface tw-shadow-sm"><div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3"><strong>Mi semana</strong><span className="tw-text-app-muted">{minutesText(ownMinutes)} planificadas</span></div></Card>
+      <div className="tw-grid tw-min-w-0 tw-gap-3 lg:tw-grid-cols-2 2xl:tw-grid-cols-3">
+        {ownDays.filter(item => !focusDay || item.day === focusDay).map(({ day, position, entries }) => <Card key={day} className={`tw-min-w-0 tw-rounded-md tw-border tw-border-app-border tw-bg-app-surface tw-shadow-sm ${day === today ? 'tw-ring-1 tw-ring-blue-300' : ''}`}>
+          <div className={`tw-mb-3 tw-flex tw-items-center tw-justify-between tw-rounded tw-p-2 ${dayColors[position]}`}><strong>{weekdays[position]}</strong><span>{day.slice(8)}/{day.slice(5, 7)}</span></div>
+          <DayEntries entries={entries} />
+        </Card>)}
+      </div>
+    </>}
   </div>;
 }

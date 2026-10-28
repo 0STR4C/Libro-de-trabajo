@@ -4,14 +4,14 @@ import { DataTable as PrimeDataTable } from 'primereact/datatable';
 export function DataTable({ className = '', ...props }) {
   const pagination = props.paginator ? {
     rowsPerPageOptions: [50, 100, 150, 200],
-    paginatorTemplate: 'FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink CurrentPageReport RowsPerPageDropdown',
+    paginatorTemplate: 'FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport',
     currentPageReportTemplate: '{first}–{last} de {totalRecords}'
   } : {};
   return <PrimeDataTable {...pagination} {...props} size="small" stripedRows className={[
     'dense-data-table tw-min-w-0 tw-max-w-full tw-text-[13px]',
     '[&_.p-datatable-wrapper]:tw-max-w-full [&_.p-datatable-wrapper]:tw-overflow-x-auto',
     '[&_.p-paginator]:tw-bg-[var(--surface)] [&_.p-paginator]:tw-text-[var(--text)] [&_.p-paginator]:tw-border-[var(--border)]',
-    '[&_.p-paginator-rpp-options]:tw-ml-auto [&_.p-paginator-rpp-options]:tw-bg-[var(--surface)] [&_.p-paginator-rpp-options]:tw-text-[var(--text)]',
+    '[&_.p-paginator]:tw-justify-center [&_.p-paginator-rpp-options]:tw-ml-2 [&_.p-paginator-rpp-options]:tw-bg-[var(--surface)] [&_.p-paginator-rpp-options]:tw-text-[var(--text)] [&_.p-paginator-rpp-options_.p-dropdown-label]:tw-text-center',
     '[&_th]:tw-h-8 [&_th]:tw-px-2 [&_th]:tw-py-1 [&_th]:tw-text-xs [&_th]:tw-font-medium',
     '[&_td]:tw-h-9 [&_td]:tw-px-2 [&_td]:tw-py-1 [&_td]:tw-text-[13px] [&_td]:tw-leading-tight',
     '[&_td:not(.tw-whitespace-nowrap)]:tw-whitespace-normal [&_td]:tw-break-words',

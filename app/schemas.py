@@ -20,6 +20,7 @@ class RoleCreateIn(BaseModel):
 
 class PermissionsIn(BaseModel):
     permissions: list[str] = Field(default_factory=list, max_length=100)
+    expected_revision: int = Field(ge=1)
 
 
 class UserCreateIn(BaseModel):
@@ -41,13 +42,16 @@ class UserCreateIn(BaseModel):
 
 class UserUpdateIn(UserCreateIn):
     active: bool = True
+    expected_revision: int = Field(ge=1)
 
 
 class GoogleAccessIn(BaseModel):
     client_id: str | None = Field(default=None, max_length=300)
+    expected_revision: int = Field(ge=1)
 
 
 class QuoteRulesIn(BaseModel):
+    expected_revision: int = Field(ge=1)
     insured_base: float = Field(ge=0, le=1_000_000_000)
     uninsured_base: float = Field(ge=0, le=1_000_000_000)
     special_insured_base: float = Field(ge=0, le=1_000_000_000)
@@ -99,17 +103,24 @@ class DelayIn(BaseModel):
     zone: str = Field(min_length=2, max_length=500)
     message: str = Field(default="Margen de", max_length=100)
     minutes: int | None = Field(default=None, ge=0, le=1440)
+    minutes_min: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    minutes_max: int | None = Field(default=None, ge=1, le=1440, strict=True)
+    instruction_text: str | None = Field(default=None, max_length=500)
     status: str = Field(default="VIGENTE", max_length=40)
     agent: str = Field(default="", max_length=120)
     review_minutes: int = Field(default=120, ge=15, le=1440)
+    duration_minutes: int | None = Field(default=None, ge=30, le=240)
+    catalog_zone: bool = False
 
 
 class DelayNormalizeIn(BaseModel):
+    expected_revision: int = Field(ge=1)
     status: Literal["NORMALIZADO"] = "NORMALIZADO"
-    resolution_note: str = Field(min_length=2, max_length=500)
+    resolution_note: str | None = Field(default=None, max_length=500)
 
 
 class DelayVerifyIn(BaseModel):
+    expected_revision: int = Field(ge=1)
     review_minutes: int = Field(default=120, ge=15, le=1440)
     verification_note: str = Field(min_length=2, max_length=500)
 
@@ -156,6 +167,7 @@ class TransferIn(BaseModel):
     allow_duplicate: bool = False
 
 class TransferEdit(BaseModel):
+    expected_revision: int = Field(ge=1)
     task_number: str = Field(min_length=1, max_length=120)
     transfer_type: str = Field(min_length=2, max_length=80)
     scheduled_date: date
@@ -169,6 +181,7 @@ class TransferEdit(BaseModel):
 
 
 class TransferStatusIn(BaseModel):
+    expected_revision: int = Field(ge=1)
     status: Literal["SIN_ASIGNAR", "ASIGNADO", "EN_CURSO", "FINALIZADO", "CANCELADO"]
     provider: str | None = Field(default=None, max_length=200)
     responsible: str | None = Field(default=None, max_length=120)
@@ -196,6 +209,7 @@ class StatusIn(BaseModel):
     comments: str | None = Field(default=None, max_length=4000)
 
 class NoticeUpdateIn(BaseModel):
+    expected_revision: int = Field(ge=1)
     status: str | None = Field(default=None, max_length=40)
     actor: str = Field(default="Operador", max_length=120)
     managed_by: str | None = Field(default=None, max_length=120)
@@ -210,6 +224,7 @@ class QuoteIn(BaseModel):
     manual_trip_km: float | None = Field(default=None, ge=0, le=1_000_000)
     manual_mobile_km: float | None = Field(default=None, ge=0, le=1_000_000)
     manual_toll_count: int | None = Field(default=None, ge=0, le=100)
+    manual_region_points: list[str] = Field(default_factory=list, max_length=3)
     include_mobile: bool = False
     include_tolls: bool = False
     uninsured: bool = False
@@ -219,6 +234,7 @@ class QuoteIn(BaseModel):
 
 
 class TollIn(BaseModel):
+    expected_revision: int | None = Field(default=None, ge=1)
     name: str = Field(min_length=2, max_length=120)
     latitude: float = Field(ge=-35.5, le=-29.0)
     longitude: float = Field(ge=-59.5, le=-52.0)

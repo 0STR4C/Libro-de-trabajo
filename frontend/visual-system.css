@@ -1,0 +1,307 @@
+/* Escala compartida de la aplicación React. Los paneles de PrimeReact portados
+   a document.body usan las mismas variables que el contenido del shell. */
+:root {
+  --ui-page-title: 22px;
+  --ui-section-title: 16px;
+  --ui-card-title: 14px;
+  --ui-body: 14px;
+  --ui-data: 13px;
+  --ui-label: 12px;
+  --ui-control-height: 36px;
+  --ui-gap: 12px;
+  --ui-related-gap: 8px;
+  --ui-card-padding: 14px;
+  --ui-menu-max-height: 264px;
+  --ui-focus: #2563eb;
+  --ui-header: #f1f5f9;
+  --ui-row-hover: #eff6ff;
+  --ui-shadow: 0 1px 3px rgb(15 23 42 / 7%);
+  --ui-overlay-shadow: 0 12px 28px rgb(15 23 42 / 16%);
+}
+html[data-theme="dark"] {
+  --ui-focus: #93c5fd;
+  --ui-header: #273449;
+  --ui-row-hover: #263e60;
+  --ui-shadow: 0 1px 3px rgb(2 6 23 / 24%);
+  --ui-overlay-shadow: 0 12px 28px rgb(2 6 23 / 48%);
+}
+html[data-theme="dark"] #prime-react-root .operational-view :is(input.p-inputtext, textarea.p-inputtextarea, .p-inputnumber-input, .p-dropdown, .p-multiselect, .p-calendar > .p-inputtext),
+html[data-theme="dark"] body > :is(.p-dialog, .p-overlaypanel) :is(input.p-inputtext, textarea.p-inputtextarea, .p-inputnumber-input, .p-dropdown, .p-multiselect) {
+  border-color: #475569 !important;
+  background: #0f172a !important;
+  color: #f8fafc !important;
+  caret-color: #f8fafc;
+}
+html[data-theme="dark"] #prime-react-root .operational-view :is(.p-dropdown-label, .p-multiselect-label, .p-inputnumber-input),
+html[data-theme="dark"] body > :is(.p-dialog, .p-dropdown-panel, .p-multiselect-panel) :is(.p-dropdown-label, .p-multiselect-label) {
+  color: #f8fafc !important;
+}
+html[data-theme="dark"] #prime-react-root .operational-view :is(input, textarea)::placeholder { color: #cbd5e1 !important; }
+
+#prime-react-root {
+  --view-gutter: clamp(16px, 1.45vw, 28px);
+  min-width: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-size: var(--ui-body);
+  line-height: 1.4;
+}
+#prime-react-root > header,
+#prime-react-root > #content { max-width: none; }
+#prime-react-root > header {
+  min-height: 48px;
+  margin-bottom: var(--ui-gap);
+  padding-bottom: var(--ui-gap);
+}
+#prime-react-root > header .header-title h1 {
+  font-size: var(--ui-page-title);
+  line-height: 1.2;
+}
+#prime-react-root > #content,
+#prime-react-root > #content > .operational-view { min-width: 0; }
+#prime-react-root > #content > .operational-view { overflow-wrap: anywhere; }
+#prime-react-root .operational-view > :is(h2, h3),
+#prime-react-root .operational-view :is(.p-card-title, .p-panel-title) {
+  color: var(--text);
+  font-size: var(--ui-section-title);
+  font-weight: 600;
+  line-height: 1.3;
+}
+#prime-react-root .operational-view :is(.p-card-title, .p-panel-title) { margin-bottom: var(--ui-related-gap); }
+#prime-react-root .operational-view :is(.p-card, .panel, .quote-result, .dashboard-as-of) {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--ui-shadow);
+}
+#prime-react-root .operational-view .p-card .p-card-body { padding: var(--ui-card-padding); }
+#prime-react-root .operational-view .p-card .p-card-content { padding: 0; }
+#prime-react-root .operational-view .p-card .p-card-body.tw-p-0 { padding: 0; }
+#prime-react-root .operational-view .p-card .p-card-body.tw-p-3 { padding: 12px; }
+#prime-react-root .operational-view .p-card .p-card-body.tw-p-4 { padding: 16px; }
+#prime-react-root .operational-view :is(.p-card-subtitle, small) { color: var(--text-muted); font-size: var(--ui-label); }
+#prime-react-root .operational-view :is(label, .field label) {
+  color: var(--text-muted);
+  font-size: var(--ui-label);
+  font-weight: 500;
+}
+#prime-react-root .operational-view label :is(input, textarea, .p-inputtext, .p-dropdown, .p-calendar, .p-inputnumber) {
+  color: var(--text);
+  font-size: var(--ui-data);
+}
+#prime-react-root .operational-view :is(.p-inputtext, .p-dropdown, .p-multiselect, .p-inputnumber-input, .p-button, .p-selectbutton .p-button),
+body > :is(.p-dialog, .p-overlaypanel) :is(.p-inputtext, .p-dropdown, .p-multiselect, .p-inputnumber-input, .p-button) {
+  min-height: var(--ui-control-height);
+  font-size: var(--ui-data);
+}
+#prime-react-root .operational-view :is(.p-dropdown, .p-multiselect),
+body > .p-dialog :is(.p-dropdown, .p-multiselect) { display: inline-flex; align-items: center; }
+#prime-react-root .operational-view :is(.p-dropdown-label, .p-multiselect-label),
+body > .p-dialog :is(.p-dropdown-label, .p-multiselect-label) {
+  padding-block: 7px;
+  font-size: var(--ui-data);
+}
+#prime-react-root .operational-view .p-calendar { display: inline-flex; align-items: stretch; min-width: 0; }
+#prime-react-root .operational-view .p-calendar > .p-inputtext { min-width: 0; }
+#prime-react-root .operational-view .p-calendar > .p-datepicker-trigger { min-width: var(--ui-control-height); }
+#prime-react-root .operational-view :is(.p-button, .p-inputtext, .p-dropdown, .p-multiselect),
+body > :is(.p-dialog, .p-menu) :is(.p-button, .p-inputtext, .p-dropdown) { border-radius: 6px; }
+#prime-react-root .operational-view :is(.p-tag, .p-badge) { font-size: var(--ui-label); line-height: 1.15; }
+#prime-react-root .operational-view .p-selectbutton { display: inline-flex; flex-wrap: wrap; max-width: 100%; gap: 2px; }
+#prime-react-root .operational-view .p-selectbutton .p-button { padding-inline: 12px; }
+
+/* Tablas: ancho disponible, filas breves y crecimiento natural de texto largo. */
+#prime-react-root .operational-view :is(.dense-data-table, .p-datatable) { min-width: 0; max-width: 100%; font-size: var(--ui-data); }
+#prime-react-root .operational-view .p-datatable-wrapper { max-width: 100%; }
+#prime-react-root .operational-view .p-datatable-thead > tr > th {
+  height: 36px;
+  padding: 7px 9px;
+  border-color: var(--border);
+  background: var(--ui-header);
+  color: var(--text-muted);
+  font-size: var(--ui-label);
+  font-weight: 600;
+  line-height: 1.2;
+}
+#prime-react-root .operational-view .p-datatable-tbody > tr > td {
+  min-height: 36px;
+  height: auto;
+  padding: 7px 9px;
+  border-color: var(--border);
+  color: var(--text);
+  font-size: var(--ui-data);
+  line-height: 1.3;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+#prime-react-root .operational-view .p-datatable-tbody > tr:hover > td { background: var(--ui-row-hover); }
+#prime-react-root .operational-view .p-paginator { min-height: 40px; padding: 4px 8px; gap: 4px; }
+#prime-react-root .operational-view .p-paginator .p-paginator-element { min-width: 32px; min-height: 32px; }
+
+/* La misma escala se compone de forma distinta según la tarea. */
+#prime-react-root [data-view="dashboard"] .dashboard-react-view > [role="status"] {
+  min-height: 28px;
+  color: var(--text-muted);
+  font-size: var(--ui-label);
+}
+#prime-react-root [data-view="dashboard"] .uruguay-map-wrap { max-width: 100%; }
+#prime-react-root [data-view="dashboard"] .operational-alert {
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--color-espera);
+  border-radius: 6px;
+}
+#prime-react-root [data-view="dashboard"] .operational-alert.overdue { border-left-color: var(--color-urgente); }
+#prime-react-root [data-view="notices"] .notice-prime-metric button,
+#prime-react-root [data-view="transfers"] [aria-label="Indicadores de programados"] .p-card-body {
+  min-height: 78px;
+  padding: 10px 12px;
+}
+#prime-react-root [data-view="notices"] .notice-prime-metric button strong,
+#prime-react-root [data-view="transfers"] [aria-label="Indicadores de programados"] strong {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+#prime-react-root [data-view="notices"] .notice-prime-metric button small { line-height: 1.2; }
+#prime-react-root [data-view="notices"] .notice-prime-view { min-height: calc(100dvh - 112px); }
+#prime-react-root [data-view="notices"] .notice-prime-table-card,
+#prime-react-root [data-view="notices"] .notice-prime-table-card :is(.p-card-body, .p-card-content, .p-datatable) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+#prime-react-root [data-view="notices"] .notice-prime-table-card .p-card-body { padding: 0; }
+#prime-react-root [data-view="notices"] .notice-prime-table-card .p-datatable-wrapper { overflow-x: auto; }
+#prime-react-root [data-view="notices"] .notice-status-dropdown.tw-ring-2 {
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 40%) !important;
+}
+html[data-theme="dark"] #prime-react-root [data-view="notices"] .notice-status-dropdown.tw-ring-2 {
+  box-shadow: 0 0 0 3px rgb(96 165 250 / 60%) !important;
+}
+.notice-calendar-panel table.p-datepicker-calendar {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.notice-calendar-panel .p-datepicker-calendar :is(th, td) {
+  box-sizing: border-box;
+  width: calc(100% / 7);
+  min-width: 0;
+  padding: 0;
+  text-align: center;
+}
+.notice-calendar-panel .p-datepicker-calendar :is(th, td) > span {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  margin-inline: auto;
+}
+#prime-react-root [data-view="quotes"] .quote-prime-layout { align-items: start; }
+#prime-react-root [data-view="quotes"] .quote-prime-layout > * { min-width: 0; }
+#prime-react-root [data-view="quotes"] .quote-prime-layout .quote-step-card .p-card-title { font-size: var(--ui-card-title); }
+#prime-react-root [data-view="quotes"] .quote-prime-layout .quote-result { align-self: start; }
+#prime-react-root [data-view="quotes"] .draft-notice {
+  min-height: 36px;
+  padding: 6px 10px;
+  border-color: var(--border);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: var(--ui-label);
+  font-weight: 500;
+}
+#prime-react-root [data-view="quotes"] .quote-result-card .quote-result { min-height: 180px; }
+#prime-react-root [data-view="quotes"] .quote-placeholder { padding: 34px 16px; }
+#prime-react-root [data-view="schedules"] .p-datatable-thead > tr > th:not(:first-child) {
+  background: var(--ui-header);
+  text-align: center;
+}
+#prime-react-root [data-view="schedules"] .p-datatable-tbody > tr > td:first-child { background: var(--surface); }
+#prime-react-root [data-view="schedules"] .p-datatable-tbody > tr > td { vertical-align: top; }
+#prime-react-root [data-view="wfm"] .wfm-react-view > .p-card:first-of-type .p-card-content > .tw-flex {
+  align-items: end;
+  row-gap: var(--ui-related-gap);
+}
+#prime-react-root [data-view="wfm"] .wfm-requests-card .p-card-content > .tw-flex > label {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 150px;
+  gap: 4px;
+}
+#prime-react-root [data-view="wfm"] .wfm-requests-card .p-card-content > .tw-flex > label:has(.p-calendar) { min-width: 190px; }
+#prime-react-root [data-view="wfm"] .wfm-requests-card .p-card-content > .tw-flex > label .p-dropdown { width: 100%; }
+#prime-react-root [data-view="settings"] .p-selectbutton { margin-bottom: 0; }
+#prime-react-root [data-view="audit"] .p-card,
+#prime-react-root [data-view="delayAudit"] .p-card { min-width: 0; }
+#prime-react-root .operational-view .empty,
+#prime-react-root .operational-view .p-datatable-emptymessage > td {
+  padding: 20px 12px !important;
+  color: var(--text-muted);
+  font-size: var(--ui-data);
+  text-align: center;
+}
+
+/* Overlays PrimeReact viven bajo body y no heredan las utilidades del shell. */
+body > :is(.p-dropdown-panel, .p-multiselect-panel, .p-menu, .p-datepicker, .p-overlaypanel, .p-dialog) {
+  max-width: calc(100vw - 24px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--ui-overlay-shadow);
+  font-size: var(--ui-data);
+}
+body > :is(.p-dropdown-panel, .p-multiselect-panel) :is(.p-dropdown-items-wrapper, .p-multiselect-items-wrapper),
+body > .p-menu .p-menu-list { max-height: var(--ui-menu-max-height) !important; overflow-y: auto; }
+body > .p-dropdown-panel .p-dropdown-items,
+body > .p-multiselect-panel .p-multiselect-items { padding: 4px; }
+body > :is(.p-dropdown-panel, .p-multiselect-panel) :is(.p-dropdown-item, .p-multiselect-item),
+body > .p-menu .p-menuitem-link { min-height: 32px; padding: 7px 10px; font-size: var(--ui-data); }
+body > :is(.p-dropdown-panel, .p-multiselect-panel) :is(.p-dropdown-filter, .p-multiselect-filter) { min-height: var(--ui-control-height); font-size: var(--ui-data); }
+body > .p-datepicker { width: min(340px, calc(100vw - 24px)); }
+body > .p-dialog { width: min(620px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); }
+body .p-dialog .p-dialog-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--ui-header) !important;
+  box-shadow: inset 4px 0 0 var(--color-primary);
+}
+body .p-dialog .p-dialog-title { font-size: var(--ui-section-title); font-weight: 600; }
+body .p-dialog .p-dialog-content { padding: 14px 16px; color: var(--text); font-size: var(--ui-body); }
+body .p-dialog .p-dialog-footer {
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle) !important;
+}
+body > :is(.p-dialog, .p-menu, .p-dropdown-panel, .p-datepicker) :is(.p-button, .p-menuitem-link, input):focus-visible,
+#prime-react-root :is(button, a, input, select, textarea, .p-dropdown, .p-multiselect):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+@media (max-width: 900px) {
+  #prime-react-root { --view-gutter: 16px; }
+  #prime-react-root .operational-view .p-card .p-card-body { padding: 12px; }
+  #prime-react-root .operational-view .p-card .p-card-body.tw-p-0 { padding: 0; }
+}
+@media (min-width: 1280px) {
+  #prime-react-root [data-view="quotes"] .quote-prime-layout .quote-result {
+    position: sticky;
+    top: 16px;
+  }
+}
+@media (max-width: 700px) {
+  #prime-react-root { --view-gutter: 12px; }
+  #prime-react-root > header .header-title h1 { font-size: 20px; }
+  #prime-react-root .operational-view :is(.p-inputtext, .p-dropdown, .p-button) { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #prime-react-root *, body > :is(.p-dialog, .p-menu, .p-dropdown-panel) * { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
